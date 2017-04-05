@@ -675,7 +675,31 @@ void CTurbSolver::ImplicitEuler_Iteration(CGeometry *geometry, CSolver **solver_
         }
         
         break;
-        
+
+      case SA_E:
+            
+        for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
+                node[iPoint]->AddClippedSolution(0, config->GetRelaxation_Factor_Turb()*LinSysSol[iPoint], lowerlimit[0], upperlimit[0]);
+        }
+            
+        break;
+
+      case SA_COMP:
+            
+        for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
+                node[iPoint]->AddClippedSolution(0, config->GetRelaxation_Factor_Turb()*LinSysSol[iPoint], lowerlimit[0], upperlimit[0]);
+        }
+            
+        break;
+
+      case SA_E_COMP:
+            
+            for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
+                node[iPoint]->AddClippedSolution(0, config->GetRelaxation_Factor_Turb()*LinSysSol[iPoint], lowerlimit[0], upperlimit[0]);
+            }
+            
+            break;
+      
       case SA_NEG:
         
         for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
@@ -981,55 +1005,51 @@ void CTurbSolver::SetResidual_DualTime(CGeometry *geometry, CSolver **solver_con
 }
 
 
-void CTurbSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig *config, int val_iter) {
+void CTurbSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig *config, int val_iter, bool val_update_geo) {
 
   /*--- Restart the solution from file information ---*/
   
   unsigned short iVar, iMesh;
   unsigned long iPoint, index, iChildren, Point_Fine;
-  su2double dull_val, Area_Children, Area_Parent, *Solution_Fine;
+  su2double Area_Children, Area_Parent, *Solution_Fine;
   bool compressible   = (config->GetKind_Regime() == COMPRESSIBLE);
   bool incompressible = (config->GetKind_Regime() == INCOMPRESSIBLE);
   bool dual_time = ((config->GetUnsteady_Simulation() == DT_STEPPING_1ST) ||
                     (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
   bool time_stepping = (config->GetUnsteady_Simulation() == TIME_STEPPING);
+  unsigned short iZone = config->GetiZone();
+  unsigned short nZone = config->GetnZone();
+
   string UnstExt, text_line;
   ifstream restart_file;
   string restart_filename = config->GetSolution_FlowFileName();
+
   int rank = MASTER_NODE;
 #ifdef HAVE_MPI
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
+
+  /*--- Modify file name for multizone problems ---*/
+  if (nZone >1)
+    restart_filename = config->GetMultizone_FileName(restart_filename, iZone);
 
   /*--- Modify file name for an unsteady restart ---*/
   
   if (dual_time|| time_stepping)
     restart_filename = config->GetUnsteady_FileName(restart_filename, val_iter);
 
-  /*--- Open the restart file, throw an error if this fails. ---*/
-  
-  restart_file.open(restart_filename.data(), ios::in);
-  if (restart_file.fail()) {
-    if (rank == MASTER_NODE)
-      cout << "There is no flow restart file!! " << restart_filename.data() << "."<< endl;
-    exit(EXIT_FAILURE);
+  /*--- Read the restart data from either an ASCII or binary SU2 file. ---*/
+
+  if (config->GetRead_Binary_Restart()) {
+    Read_SU2_Restart_Binary(geometry[MESH_0], config, restart_filename);
+  } else {
+    Read_SU2_Restart_ASCII(geometry[MESH_0], config, restart_filename);
   }
 
-  /*--- In case this is a parallel simulation, we need to perform the
-   Global2Local index transformation first. ---*/
-  
-  map<unsigned long,unsigned long> Global2Local;
-  map<unsigned long,unsigned long>::const_iterator MI;
-
-  /*--- Now fill array with the transform values only for local points ---*/
-  
-  for (iPoint = 0; iPoint < geometry[MESH_0]->GetnPointDomain(); iPoint++) {
-    Global2Local[geometry[MESH_0]->node[iPoint]->GetGlobalIndex()] = iPoint;
-  }
-
-  /*--- Read all lines in the restart file ---*/
-  
+  int counter = 0;
   long iPoint_Local = 0; unsigned long iPoint_Global = 0;
+  unsigned long iPoint_Global_Local = 0;
+  unsigned short rbuf_NotMatching = 0, sbuf_NotMatching = 0;
 
   /*--- Skip flow variables ---*/
   
@@ -1044,40 +1064,60 @@ void CTurbSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig *
     if (nDim == 3) skipVars += 7;
   }
 
-  /*--- The first line is the header ---*/
-  
-  getline (restart_file, text_line);
+  /*--- Load data from the restart into correct containers. ---*/
 
+  counter = 0;
   for (iPoint_Global = 0; iPoint_Global < geometry[MESH_0]->GetGlobal_nPointDomain(); iPoint_Global++ ) {
-    
-    getline (restart_file, text_line);
-    
-    istringstream point_line(text_line);
+
 
     /*--- Retrieve local index. If this node from the restart file lives
      on the current processor, we will load and instantiate the vars. ---*/
-    
-    MI = Global2Local.find(iPoint_Global);
-    if (MI != Global2Local.end()) {
-      
-      iPoint_Local = Global2Local[iPoint_Global];
-      
-      point_line >> index;
-      for (iVar = 0; iVar < skipVars; iVar++) { point_line >> dull_val;}
-      for (iVar = 0; iVar < nVar; iVar++) { point_line >> Solution[iVar];}
-      node[iPoint_Local]->SetSolution(Solution);
 
+    iPoint_Local = geometry[MESH_0]->GetGlobal_to_Local_Point(iPoint_Global);
+
+    if (iPoint_Local > -1) {
+      
+      /*--- We need to store this point's data, so jump to the correct
+       offset in the buffer of data from the restart file and load it. ---*/
+
+      index = counter*Restart_Vars[0] + skipVars;
+      for (iVar = 0; iVar < nVar; iVar++) Solution[iVar] = Restart_Data[index+iVar];
+      node[iPoint_Local]->SetSolution(Solution);
+      iPoint_Global_Local++;
+
+      /*--- Increment the overall counter for how many points have been loaded. ---*/
+      counter++;
     }
 
   }
 
-  /*--- Close the restart file ---*/
-  
-  restart_file.close();
+  /*--- Detect a wrong solution file ---*/
+
+  if (iPoint_Global_Local < nPointDomain) { sbuf_NotMatching = 1; }
+
+#ifndef HAVE_MPI
+  rbuf_NotMatching = sbuf_NotMatching;
+#else
+  SU2_MPI::Allreduce(&sbuf_NotMatching, &rbuf_NotMatching, 1, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
+#endif
+  if (rbuf_NotMatching != 0) {
+    if (rank == MASTER_NODE) {
+      cout << endl << "The solution file " << restart_filename.data() << " doesn't match with the mesh file!" << endl;
+      cout << "It could be empty lines at the end of the file." << endl << endl;
+    }
+#ifndef HAVE_MPI
+    exit(EXIT_FAILURE);
+#else
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Abort(MPI_COMM_WORLD,1);
+    MPI_Finalize();
+#endif
+  }
 
   /*--- MPI solution and compute the eddy viscosity ---*/
   
   solver[MESH_0][TURB_SOL]->Set_MPI_Solution(geometry[MESH_0], config);
+  solver[MESH_0][FLOW_SOL]->Preprocessing(geometry[MESH_0], solver[MESH_0], config, MESH_0, NO_RK_ITER, RUNTIME_FLOW_SYS, false);
   solver[MESH_0][TURB_SOL]->Postprocessing(geometry[MESH_0], solver[MESH_0], config, MESH_0);
 
   /*--- Interpolate the solution down to the coarse multigrid levels ---*/
@@ -1097,8 +1137,15 @@ void CTurbSolver::LoadRestart(CGeometry **geometry, CSolver ***solver, CConfig *
       solver[iMesh][TURB_SOL]->node[iPoint]->SetSolution(Solution);
     }
     solver[iMesh][TURB_SOL]->Set_MPI_Solution(geometry[iMesh], config);
+    solver[iMesh][FLOW_SOL]->Preprocessing(geometry[iMesh], solver[iMesh], config, iMesh, NO_RK_ITER, RUNTIME_FLOW_SYS, false);
     solver[iMesh][TURB_SOL]->Postprocessing(geometry[iMesh], solver[iMesh], config, iMesh);
   }
+
+  /*--- Delete the class memory that is used to load the restart. ---*/
+
+  if (Restart_Vars != NULL) delete [] Restart_Vars;
+  if (Restart_Data != NULL) delete [] Restart_Data;
+  Restart_Vars = NULL; Restart_Data = NULL;
 
 }
 
@@ -1106,18 +1153,8 @@ CTurbSASolver::CTurbSASolver(void) : CTurbSolver() { }
 
 CTurbSASolver::CTurbSASolver(CGeometry *geometry, CConfig *config, unsigned short iMesh, CFluidModel* FluidModel) : CTurbSolver() {
   unsigned short iVar, iDim, nLineLets;
-  unsigned long iPoint, index;
-  su2double Density_Inf, Viscosity_Inf, Factor_nu_Inf, Factor_nu_Engine, Factor_nu_ActDisk, dull_val;
-  
-  unsigned short iZone = config->GetiZone();
-  unsigned short nZone = geometry->GetnZone();
-  bool restart = (config->GetRestart() || config->GetRestart_Flow());
-  bool adjoint = (config->GetContinuous_Adjoint()) || (config->GetDiscrete_Adjoint());
-  bool compressible = (config->GetKind_Regime() == COMPRESSIBLE);
-  bool incompressible = (config->GetKind_Regime() == INCOMPRESSIBLE);
-  bool dual_time = ((config->GetUnsteady_Simulation() == DT_STEPPING_1ST) ||
-                    (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
-  bool time_stepping = config->GetUnsteady_Simulation() == TIME_STEPPING;
+  unsigned long iPoint;
+  su2double Density_Inf, Viscosity_Inf, Factor_nu_Inf, Factor_nu_Engine, Factor_nu_ActDisk;
 
   int rank = MASTER_NODE;
 #ifdef HAVE_MPI
@@ -1264,158 +1301,15 @@ CTurbSASolver::CTurbSASolver(CGeometry *geometry, CConfig *config, unsigned shor
   Ji_3 = Ji*Ji*Ji;
   fv1 = Ji_3/(Ji_3+cv1_3);
   muT_Inf = Density_Inf*fv1*nu_tilde_Inf;
-  
-  /*--- Restart the solution from file information ---*/
-  if (!restart || (iMesh != MESH_0)) {
-    for (iPoint = 0; iPoint < nPoint; iPoint++)
-      node[iPoint] = new CTurbSAVariable(nu_tilde_Inf, muT_Inf, nDim, nVar, config);
-  }
-  else {
-    
-    /*--- Restart the solution from file information ---*/
-    ifstream restart_file;
-    string filename = config->GetSolution_FlowFileName();
-    su2double Density, StaticEnergy, Laminar_Viscosity, nu, nu_hat, muT = 0.0, U[5];
-    int Unst_RestartIter;
 
-    /*--- Modify file name for multizone problems ---*/
-    if (nZone >1)
-      filename= config->GetMultizone_FileName(filename, iZone);
-    
-    /*--- Modify file name for an unsteady restart ---*/
-    if (dual_time) {
-      if (adjoint) {
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_AdjointIter()) - 1;
-      } else if (config->GetUnsteady_Simulation() == DT_STEPPING_1ST)
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_RestartIter())-1;
-      else
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_RestartIter())-2;
-      filename = config->GetUnsteady_FileName(filename, Unst_RestartIter);
-    }
+  /*--- Initialize the solution to the far-field state everywhere. ---*/
 
-    /*--- Modify file name for a simple unsteady restart ---*/
+  for (iPoint = 0; iPoint < nPoint; iPoint++)
+    node[iPoint] = new CTurbSAVariable(nu_tilde_Inf, muT_Inf, nDim, nVar, config);
 
-    if (time_stepping) {
-      if (adjoint) {
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_AdjointIter()) - 1;
-      } else {
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_RestartIter())-1;
-      }
-      filename = config->GetUnsteady_FileName(filename, Unst_RestartIter);
-    }
-    
-    /*--- Open the restart file, throw an error if this fails. ---*/
-    restart_file.open(filename.data(), ios::in);
-    if (restart_file.fail()) {
-      cout << "There is no turbulent restart file!!" << endl;
-      exit(EXIT_FAILURE);
-    }
-    
-    /*--- In case this is a parallel simulation, we need to perform the
-     Global2Local index transformation first. ---*/
-
-    map<unsigned long,unsigned long> Global2Local;
-    map<unsigned long,unsigned long>::const_iterator MI;
-    
-    /*--- Now fill array with the transform values only for local points ---*/
-    for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
-      Global2Local[geometry->node[iPoint]->GetGlobalIndex()] = iPoint;
-    }
-    
-    /*--- Read all lines in the restart file ---*/
-    
-    long iPoint_Local; unsigned long iPoint_Global = 0; string text_line; unsigned long iPoint_Global_Local = 0;
-    unsigned short rbuf_NotMatching = 0, sbuf_NotMatching = 0;
-    
-    /*--- The first line is the header ---*/
-    
-    getline (restart_file, text_line);
-    
-    for (iPoint_Global = 0; iPoint_Global < geometry->GetGlobal_nPointDomain(); iPoint_Global++ ) {
-      
-      getline (restart_file, text_line);
-      
-      istringstream point_line(text_line);
-      
-      /*--- Retrieve local index. If this node from the restart file lives
-       on the current processor, we will load and instantiate the vars. ---*/
-      
-      MI = Global2Local.find(iPoint_Global);
-      if (MI != Global2Local.end()) {
-        
-        iPoint_Local = Global2Local[iPoint_Global];
-        
-        if (compressible) {
-          if (nDim == 2) point_line >> index >> dull_val >> dull_val >> U[0] >> U[1] >> U[2] >> U[3] >> Solution[0];
-          if (nDim == 3) point_line >> index >> dull_val >> dull_val >> dull_val >> U[0] >> U[1] >> U[2] >> U[3] >> U[4] >> Solution[0];
-          
-          Density = U[0];
-          if (nDim == 2)
-            StaticEnergy = U[3]/U[0] - (U[1]*U[1] + U[2]*U[2])/(2.0*U[0]*U[0]);
-          else
-            StaticEnergy = U[4]/U[0] - (U[1]*U[1] + U[2]*U[2] + U[3]*U[3] )/(2.0*U[0]*U[0]);
-
-          FluidModel->SetTDState_rhoe(Density, StaticEnergy);
-          Laminar_Viscosity = FluidModel->GetLaminarViscosity();
-          nu     = Laminar_Viscosity/Density;
-          nu_hat = Solution[0];
-          Ji     = nu_hat/nu;
-          Ji_3   = Ji*Ji*Ji;
-          fv1    = Ji_3/(Ji_3+cv1_3);
-          muT    = Density*fv1*nu_hat;
-          
-        }
-        if (incompressible) {
-          if (nDim == 2) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0];
-          if (nDim == 3) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0];
-          muT = muT_Inf;
-        }
-        
-        /*--- Instantiate the solution at this node, note that the eddy viscosity should be recomputed ---*/
-        node[iPoint_Local] = new CTurbSAVariable(Solution[0], muT, nDim, nVar, config);
-        iPoint_Global_Local++;
-      }
-
-    }
-    
-    /*--- Detect a wrong solution file ---*/
-    
-    if (iPoint_Global_Local < nPointDomain) { sbuf_NotMatching = 1; }
-    
-#ifndef HAVE_MPI
-    rbuf_NotMatching = sbuf_NotMatching;
-#else
-    SU2_MPI::Allreduce(&sbuf_NotMatching, &rbuf_NotMatching, 1, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
-#endif
-    if (rbuf_NotMatching != 0) {
-      if (rank == MASTER_NODE) {
-        cout << endl << "The solution file " << filename.data() << " doesn't match with the mesh file!" << endl;
-        cout << "It could be empty lines at the end of the file." << endl << endl;
-      }
-#ifndef HAVE_MPI
-      exit(EXIT_FAILURE);
-#else
-      MPI_Barrier(MPI_COMM_WORLD);
-      MPI_Abort(MPI_COMM_WORLD,1);
-      MPI_Finalize();
-#endif
-    }
-    
-    /*--- Instantiate the variable class with an arbitrary solution
-     at any halo/periodic nodes. The initial solution can be arbitrary,
-     because a send/recv is performed immediately in the solver. ---*/
-    for (iPoint = nPointDomain; iPoint < nPoint; iPoint++) {
-      node[iPoint] = new CTurbSAVariable(Solution[0], muT_Inf, nDim, nVar, config);
-    }
-    
-    /*--- Close the restart file ---*/
-    restart_file.close();
-
-  }
-  
   /*--- MPI solution ---*/
   Set_MPI_Solution(geometry, config);
-  
+
 }
 
 CTurbSASolver::~CTurbSASolver(void) {
@@ -1425,7 +1319,6 @@ CTurbSASolver::~CTurbSASolver(void) {
 void CTurbSASolver::Preprocessing(CGeometry *geometry, CSolver **solver_container, CConfig *config, unsigned short iMesh, unsigned short iRKStep, unsigned short RunTime_EqSystem, bool Output) {
   
   unsigned long iPoint;
-
   unsigned long ExtIter      = config->GetExtIter();
   bool limiter_flow          = ((config->GetSpatialOrder_Flow() == SECOND_ORDER_LIMITER) && (ExtIter <= config->GetLimiterIter()));
 
@@ -1499,6 +1392,15 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
   
   bool harmonic_balance = (config->GetUnsteady_Simulation() == HARMONIC_BALANCE);
   bool transition    = (config->GetKind_Trans_Model() == LM);
+  su2double Const_DES   = config->GetConst_DES();
+  su2double Delta, dist_wall, distDES, distDES_tilde;
+  su2double mu, rho, nu, eddy_visc, nut, k2,r_d, f_d, uijuij;
+  su2double **PrimVar_Grad;
+  su2double *nu_hat, fw_star = 0.424, cv1_3 = pow(7.1, 3.0); k2 = pow(0.41, 2.0);
+  su2double cb1   = 0.1355, ct3 = 1.2, ct4   = 0.5, cw_iddes = 0.15;
+  su2double sigma = 2./3., cb2 = 0.622;
+  su2double cw1, Ji, Ji_2, Ji_3, fv1, fv2, ft2, psi_2;
+  unsigned short iDim, jDim;
   
   for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
     
@@ -1530,11 +1432,529 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
     /*--- Set volume ---*/
     
     numerics->SetVolume(geometry->node[iPoint]->GetVolume());
-    
-    /*--- Set distance to the surface ---*/
-    
-    numerics->SetDistance(geometry->node[iPoint]->GetWall_Distance(), 0.0);
-    
+
+    /*--- Get Hybrid RANS/LES Type ---*/
+      /*--- It can be coupled with any SA model (Find a more elegant way)---*/
+      
+    if (config->GetKind_HybridRANSLES()==NO_HYBRIDRANSLES) {
+          
+          /*--- Set distance to the surface ---*/
+          
+      numerics->SetDistance(geometry->node[iPoint]->GetWall_Distance(), 0.0);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_DES){
+
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      Delta = pow(geometry -> node[iPoint]->GetVolume(),1.0/3.0);
+      distDES = Const_DES * Delta;
+      distDES_tilde = min(distDES,dist_wall);
+      
+      /*--- Set distance to the surface with DES distance ---*/
+      
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_DDES){
+      su2double *Coord_i, *Coord_j, aux_delta;
+      unsigned short nNeigh, iNeigh;
+      unsigned long NumNeigh;
+      
+      /*--- Marcello Righi's Delta max ---*/
+      
+        Coord_i = geometry->node[iPoint]->GetCoord();
+        nNeigh = geometry->node[iPoint]->GetnPoint();
+        
+        Delta=0.;
+        
+        for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
+        
+        aux_delta=0.;
+        for (iDim=0;iDim<nDim;++iDim)
+          aux_delta += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+        
+        Delta=max(Delta,sqrt(aux_delta));
+        
+        }
+
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      
+      distDES = Const_DES * Delta;
+      PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
+      
+      uijuij=0.0;
+      
+      for(iDim=0;iDim<nDim;++iDim){
+          for(jDim=0;jDim<nDim;++jDim){
+              uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
+      
+      uijuij=sqrt(fabs(uijuij));
+      uijuij=max(uijuij,1e-10);
+      
+      rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
+      mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
+      
+      nu=mu/rho;
+      
+      eddy_visc = solver_container[TURB_SOL]->node[iPoint]->GetmuT();
+      nut=eddy_visc/rho;
+      k2=pow(0.41,2.0);
+      r_d= (nut+nu)/(uijuij*k2*pow(dist_wall, 2.0));
+      f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      /*--- Low Reynolds number correction tem ---*/
+      nu_hat = node[iPoint]->GetSolution();
+      Ji   = nu_hat[0]/nu;
+      Ji_2 = Ji * Ji;
+      Ji_3 = Ji*Ji*Ji;
+      fv1  = Ji_3/(Ji_3+cv1_3);
+      fv2 = 1.0 - Ji/(1.0+Ji*fv1);
+      ft2 = ct3*exp(-ct4*Ji_2);
+      cw1 = cb1/k2+(1.0+cb2)/sigma;
+      
+      psi_2 = (1.0 - (cb1/(cw1*k2*fw_star))*(ft2 + (1.0 - ft2)*fv2))/(fv1 * max(1.0e-10,1.0-ft2));
+      psi_2 = min(100.0,psi_2);
+      
+      //distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES*sqrt(psi_2)));
+      distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES));
+      
+      /*--- Set distance to the surface with DDES distance ---*/
+
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_ZDES){
+      su2double *Coord_i, *Coord_j, deltax=0.0, deltay=0.0, deltaz=0.0, aux_delta, *Vorticity_i;
+      su2double Omega, ratio_Omegax, ratio_Omegay, ratio_Omegaz;
+      unsigned short nNeigh, iNeigh;
+      unsigned long NumNeigh;
+      
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+          NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+          Coord_j = geometry->node[NumNeigh]->GetCoord();
+          aux_delta = abs(Coord_j[0] - Coord_i[0]);
+          deltax = max(deltax,aux_delta);
+          aux_delta = abs(Coord_j[1] - Coord_i[1]);
+          deltay = max(deltay,aux_delta);
+          if (nDim == 3){
+              aux_delta = abs(Coord_j[2] - Coord_i[2]);
+              deltaz = max(deltaz,aux_delta);}
+      }
+      
+      Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
+      Omega = sqrt(Vorticity_i[0]*Vorticity_i[0]+ Vorticity_i[1]*Vorticity_i[1]+ Vorticity_i[2]*Vorticity_i[2]);
+      ratio_Omegax = Vorticity_i[0]/Omega;
+      ratio_Omegay = Vorticity_i[1]/Omega;
+      ratio_Omegaz = Vorticity_i[2]/Omega;
+      
+      Delta =sqrt(pow(ratio_Omegax,2.0)*deltay*deltaz + pow(ratio_Omegay,2.0)*deltax*deltaz + pow(ratio_Omegaz,2.0)*deltax*deltay);
+      
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      
+      distDES = Const_DES * Delta;
+      PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
+      
+      uijuij=0.0;
+      for(iDim=0;iDim<nDim;++iDim){
+          for(jDim=0;jDim<nDim;++jDim){
+              uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
+      
+      uijuij=sqrt(fabs(uijuij));
+      uijuij=max(uijuij,1e-10);
+      
+      
+      rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
+      mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
+      
+      nu=mu/rho;
+      
+      eddy_visc = solver_container[TURB_SOL]->node[iPoint]->GetmuT();
+      nut=eddy_visc/rho;
+      k2=pow(0.41,2.0);
+      r_d= (nut+nu)/(uijuij*k2*pow(dist_wall, 2.0));
+      f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      /*--- Low Reynolds number correction tem ---*/
+      nu_hat = node[iPoint]->GetSolution();
+      Ji   = nu_hat[0]/nu;
+      Ji_2 = Ji * Ji;
+      Ji_3 = Ji*Ji*Ji;
+      fv1  = Ji_3/(Ji_3+cv1_3);
+      fv2 = 1.0 - Ji/(1.0+Ji*fv1);
+      ft2 = ct3*exp(-ct4*Ji_2);
+      cw1 = cb1/k2+(1.0+cb2)/sigma;
+      
+      psi_2 = (1.0 - (cb1/(cw1*k2*fw_star))*(ft2 + (1.0 - ft2)*fv2))/(fv1 * max(1.0e-10,1.0-ft2));
+      psi_2 = min(100.0,psi_2);
+      
+      //distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES*sqrt(psi_2)));
+      distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES));
+      
+      /*--- Set distance to the surface with DDES distance ---*/
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_EDDES){
+          
+      /*--- An Enhanced Version of DES with Rapid Transition from RANS to LES in Separated Flows.
+       Shur et al.
+       Flow Turbulence Combust - 2015
+       ---*/
+      su2double *Coord_i, *Coord_j, *Vorticity_i, *Vorticity_j;
+      su2double Omega, ratio_Omega[3]={0.0,0.0,0.0}, delta_i[3]={0.0,0.0,0.0}, ln[3]={0.0,0.0,0.0};
+      su2double **PrimVar_Grad_j, f_kh, f_kh_lim;
+      su2double Strain_i[3][3], Strain_j[3][3],StrainDotVort[3]={0.0,0.0,0.0},numVecVort[3]={0.0,0.0,0.0};
+      su2double numerator, denominator, trace0, trace1, VTM_i, ln_max, aux_ln, f_max=1.0, f_min=0.1, a1=0.15, a2=0.3;
+      unsigned short nNeigh, iNeigh, i,j;
+      
+      unsigned long NumNeigh;
+      
+      /*--- Initialize Strain Tensor ---*/
+      for (i=0; i<3; ++i) {
+        for (j=0; j<3; ++j) {
+          Strain_i[i][j]=0.0;
+          Strain_j[i][j]=0.0;
+        }
+      }
+      
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
+      
+      /*-- Strain Tensor --*/
+      
+      Strain_i[0][0] = PrimVar_Grad[1][0];
+      Strain_i[1][0] = 0.5*(PrimVar_Grad[2][0] + PrimVar_Grad[1][1]);
+      Strain_i[0][1] = 0.5*(PrimVar_Grad[1][1] + PrimVar_Grad[2][0]);
+      Strain_i[1][1] = PrimVar_Grad[2][1];
+      if (nDim==3){
+        Strain_i[0][2] = 0.5*(PrimVar_Grad[3][0] + PrimVar_Grad[1][2]);
+        Strain_i[1][2] = 0.5*(PrimVar_Grad[3][1] + PrimVar_Grad[2][2]);
+        Strain_i[2][0] = 0.5*(PrimVar_Grad[1][2] + PrimVar_Grad[3][0]);
+        Strain_i[2][1] = 0.5*(PrimVar_Grad[2][2] + PrimVar_Grad[3][1]);
+        Strain_i[2][0] = PrimVar_Grad[3][2];
+      }
+      
+      Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
+      Omega = sqrt(Vorticity_i[0]*Vorticity_i[0]+ Vorticity_i[1]*Vorticity_i[1]+ Vorticity_i[2]*Vorticity_i[2]);
+      
+      for (i=0; i<3; ++i) {
+        ratio_Omega[i] = Vorticity_i[i]/Omega;
+      }
+      
+      
+      StrainDotVort[0] = Strain_i[0][0]*Vorticity_i[0]+Strain_i[0][1]*Vorticity_i[1]+Strain_i[0][2]*Vorticity_i[2];
+      StrainDotVort[1] = Strain_i[1][0]*Vorticity_i[0]+Strain_i[1][1]*Vorticity_i[1]+Strain_i[1][2]*Vorticity_i[2];
+      StrainDotVort[2] = Strain_i[2][0]*Vorticity_i[0]+Strain_i[2][1]*Vorticity_i[1]+Strain_i[2][2]*Vorticity_i[2];
+      
+      numVecVort[0]=StrainDotVort[1]*Vorticity_i[2] - StrainDotVort[2]*Vorticity_i[1];
+      numVecVort[1]=StrainDotVort[2]*Vorticity_i[0] - StrainDotVort[0]*Vorticity_i[2];
+      numVecVort[2]=StrainDotVort[0]*Vorticity_i[1] - StrainDotVort[1]*Vorticity_i[0];
+      
+      numerator = sqrt(6.0) * sqrt(numVecVort[0]*numVecVort[0] + numVecVort[1]*numVecVort[1] + numVecVort[2]*numVecVort[2]);
+      trace0 = 3.0*(pow(Strain_i[0][0],2.0) + pow(Strain_i[1][1],2.0) + pow(Strain_i[2][2],2.0));
+      trace1 = pow(Strain_i[0][0] + Strain_i[1][1] + Strain_i[2][2],2.0);
+      denominator = pow(Omega, 2.0) * sqrt(trace0-trace1);
+      
+      rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
+      mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
+      
+      nu=mu/rho;
+      
+      eddy_visc = solver_container[TURB_SOL]->node[iPoint]->GetmuT();
+      nut=eddy_visc/rho;
+      
+      VTM_i = (numerator/denominator) * max(1.0,0.2*nu/nut);
+      
+      ln_max=0.0;
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
+        delta_i[0] = fabs(Coord_j[0] - Coord_i[0]);
+        delta_i[1] = fabs(Coord_j[1] - Coord_i[1]);
+        if (nDim == 3)
+          delta_i[2] = fabs(Coord_j[2] - Coord_i[2]);
+        ln[0] = delta_i[1]*ratio_Omega[2] - delta_i[2]*ratio_Omega[1];
+        ln[1] = delta_i[2]*ratio_Omega[0] - delta_i[0]*ratio_Omega[2];
+        ln[2] = delta_i[0]*ratio_Omega[1] - delta_i[1]*ratio_Omega[0];
+        aux_ln = sqrt(ln[0]*ln[0] + ln[1]*ln[1] + ln[2]*ln[2]);
+        ln_max = max(ln_max,aux_ln);
+        
+        PrimVar_Grad_j=solver_container[FLOW_SOL]->node[NumNeigh]->GetGradient_Primitive();
+        
+        /*-- Strain Tensor --*/
+        
+        Strain_j[0][0] = PrimVar_Grad_j[1][0];
+        Strain_j[1][0] = 0.5*(PrimVar_Grad_j[2][0] + PrimVar_Grad_j[1][1]);
+        Strain_j[0][1] = 0.5*(PrimVar_Grad_j[1][1] + PrimVar_Grad_j[2][0]);
+        Strain_j[1][1] = PrimVar_Grad_j[2][1];
+        if (nDim==3){
+          Strain_j[0][2] = 0.5*(PrimVar_Grad_j[3][0] + PrimVar_Grad_j[1][2]);
+          Strain_j[1][2] = 0.5*(PrimVar_Grad_j[3][1] + PrimVar_Grad_j[2][2]);
+          Strain_j[2][0] = 0.5*(PrimVar_Grad_j[1][2] + PrimVar_Grad_j[3][0]);
+          Strain_j[2][1] = 0.5*(PrimVar_Grad_j[2][2] + PrimVar_Grad_j[3][1]);
+          Strain_j[2][0] = PrimVar_Grad_j[3][2];
+        }
+        
+        Vorticity_j = solver_container[FLOW_SOL]->node[NumNeigh]->GetVorticity();
+        Omega = sqrt(Vorticity_j[0]*Vorticity_j[0]+ Vorticity_j[1]*Vorticity_j[1]+ Vorticity_j[2]*Vorticity_j[2]);
+        StrainDotVort[0] = Strain_j[0][0]*Vorticity_j[0]+Strain_j[0][1]*Vorticity_j[1]+Strain_j[0][2]*Vorticity_j[2];
+        StrainDotVort[1] = Strain_j[1][0]*Vorticity_j[0]+Strain_j[1][1]*Vorticity_j[1]+Strain_j[1][2]*Vorticity_j[2];
+        StrainDotVort[2] = Strain_j[2][0]*Vorticity_j[0]+Strain_j[2][1]*Vorticity_j[1]+Strain_j[2][2]*Vorticity_j[2];
+        
+        numVecVort[0]=StrainDotVort[1]*Vorticity_j[2] - StrainDotVort[2]*Vorticity_j[1];
+        numVecVort[1]=StrainDotVort[2]*Vorticity_j[0] - StrainDotVort[0]*Vorticity_j[2];
+        numVecVort[2]=StrainDotVort[0]*Vorticity_j[1] - StrainDotVort[1]*Vorticity_j[0];
+        
+        numerator = sqrt(6.0) * sqrt(numVecVort[0]*numVecVort[0] + numVecVort[1]*numVecVort[1] + numVecVort[2]*numVecVort[2]);
+        trace0 = 3.0*(pow(Strain_j[0][0],2.0) + pow(Strain_j[1][1],2.0) + pow(Strain_j[2][2],2.0));
+        trace1 = pow(Strain_j[0][0] + Strain_j[1][1] + Strain_j[2][2],2.0);
+        denominator = pow(Omega, 2.0) * sqrt(trace0-trace1);
+        //cout << "VTM: " << numerator/denominator << endl;
+        VTM_i += (numerator/denominator) * max(1.0,0.2*nu/nut);
+      }
+      
+      //cout << ln_max << endl;
+      VTM_i = (VTM_i/fabs(nNeigh + 1.0));
+      
+      f_kh = max(f_min, min(f_max, f_min + ((f_max - f_min)/(a2 - a1)) * (VTM_i - a1)));
+      
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      
+      uijuij=0.0;
+      for(iDim=0;iDim<nDim;++iDim){
+        for(jDim=0;jDim<nDim;++jDim){
+          uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
+      
+      uijuij=sqrt(fabs(uijuij));
+      uijuij=max(uijuij,1e-10);
+      
+      k2=pow(0.41,2.0);
+      r_d= (nut+nu)/(uijuij*k2*pow(dist_wall, 2.0));
+      f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      if (f_d < (1.0-0.01)) {
+        f_kh_lim = 1.0;
+      }
+      else {
+        f_kh_lim = f_kh;
+      }
+      
+      Delta = (ln_max/sqrt(3.0)) * f_kh_lim;
+      distDES = Const_DES * Delta;
+      
+      distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES));
+      
+      /*--- Set distance to the surface with DDES distance ---*/
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_IDDES){
+      su2double *Coord_i, *Coord_j, aux_delta, Delta_min, aux_min;
+      su2double alpha2, f_b, f_d_tilde, dist_zonal;
+      unsigned short nNeigh, iNeigh;
+      unsigned long NumNeigh;
+      
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      
+      Delta = 0.0;
+      Delta_min = 0.0;
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
+        
+        aux_delta = 0.0;
+        aux_min = 0.0;
+        for (iDim=0;iDim<nDim;++iDim){
+          aux_delta = max(aux_delta,Coord_j[iDim]-Coord_i[iDim]);
+          aux_min = min(aux_min,Coord_j[iDim]-Coord_i[iDim]);
+        }
+        
+        Delta_min = min(Delta_min, aux_min);
+        Delta = max(Delta,aux_delta);
+      }
+      
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      
+      //distDES = Const_DES * Delta;
+      
+      distDES = max(cw_iddes*dist_wall, cw_iddes*Delta);
+      distDES = max(distDES, Delta_min);
+      distDES = min(distDES,Delta) * Const_DES;
+      
+      PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
+      
+      uijuij=0.0;
+      for(iDim=0;iDim<nDim;++iDim){
+        for(jDim=0;jDim<nDim;++jDim){
+          uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
+      
+      uijuij=sqrt(fabs(uijuij));
+      uijuij=max(uijuij,1e-10);
+      
+
+      rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
+      mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
+      
+      nu=mu/rho;
+      
+      eddy_visc = solver_container[TURB_SOL]->node[iPoint]->GetmuT();
+      nut=eddy_visc/rho;
+      k2=pow(0.41,2.0);
+      
+      /*--- The variables r_d and f_d are functions only of the eddy viscosity ---*/
+      
+      r_d= (nut)/(uijuij*k2*pow(dist_wall, 2.0));
+      f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      alpha2 = pow(0.25 - (dist_wall/Delta) , 2.0);
+      f_b = min(2.0 * exp(-9.0 * alpha2), 1.0);
+      f_d_tilde = max((1.0-f_d), f_b);
+
+      /*--- Low Reynolds number correction term ---*/
+      
+      nu_hat = node[iPoint]->GetSolution();
+      Ji   = nu_hat[0]/nu;
+      Ji_2 = Ji * Ji;
+      Ji_3 = Ji*Ji*Ji;
+      fv1  = Ji_3/(Ji_3+cv1_3);
+      fv2 = 1.0 - Ji/(1.0+Ji*fv1);
+      ft2 = ct3*exp(-ct4*Ji_2);
+      cw1 = cb1/k2+(1.0+cb2)/sigma;
+      
+      psi_2 = (1.0 - (cb1/(cw1*k2*fw_star))*(ft2 + (1.0 - ft2)*fv2))/(fv1 * max(1.0e-10,1.0-ft2));
+      psi_2 = min(100.0,psi_2);
+
+      distDES_tilde = f_d_tilde * dist_wall + (1.0 - f_d_tilde) * distDES*sqrt(psi_2);
+      
+      /*--- Set distance to the surface with IDDES distance ---*/
+      
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+      
+//      if (config->GetZonal_DES()){
+//        dist_zonal = config->GetZonal_Dist();
+//        if (dist_wall <= dist_zonal)
+//          numerics->SetDistance(dist_wall, 0.0);
+//        else
+//          numerics->SetDistance(distDES_tilde, 0.0);
+//      }
+//      else
+//        numerics->SetDistance(distDES_tilde, 0.0);
+      
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_IZDES){
+      su2double *Coord_i, *Coord_j, aux_delta, Delta_min, aux_min;
+      su2double alpha2, f_b, f_d_tilde, dist_zonal;
+      su2double deltax=0.0, deltay=0.0, deltaz=0.0, *Vorticity_i;
+      su2double Omega, ratio_Omegax, ratio_Omegay, ratio_Omegaz, Delta_w;
+      unsigned short nNeigh, iNeigh;
+      unsigned long NumNeigh;
+      
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      
+      Delta = 0.0;
+      Delta_min = 0.0;
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
+        
+        aux_delta = 0.0;
+        aux_min = 0.0;
+        for (iDim=0;iDim<nDim;++iDim){
+          aux_delta = max(aux_delta,Coord_j[iDim]-Coord_i[iDim]);
+          aux_min = min(aux_min,Coord_j[iDim]-Coord_i[iDim]);
+        }
+        Delta_min = min(Delta_min, aux_min);
+        Delta = max(Delta,aux_delta);
+        
+        deltax = max(deltax, abs(Coord_j[0] - Coord_i[0]));
+        deltay = max(deltay, abs(Coord_j[1] - Coord_i[1]));
+        deltaz = max(deltaz, abs(Coord_j[2] - Coord_i[2]));
+      }
+                
+      Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
+      Omega = sqrt(Vorticity_i[0]*Vorticity_i[0]+ Vorticity_i[1]*Vorticity_i[1]+ Vorticity_i[2]*Vorticity_i[2]);
+      ratio_Omegax = Vorticity_i[0]/Omega;
+      ratio_Omegay = Vorticity_i[1]/Omega;
+      ratio_Omegaz = Vorticity_i[2]/Omega;
+      
+      Delta_w =sqrt(pow(ratio_Omegax,2.0)*deltay*deltaz + pow(ratio_Omegay,2.0)*deltax*deltaz + pow(ratio_Omegaz,2.0)*deltax*deltay);
+      
+      dist_wall = geometry->node[iPoint]->GetWall_Distance();
+      
+      distDES = max(cw_iddes*dist_wall, cw_iddes*Delta);
+      distDES = max(distDES, Delta_min);
+      distDES = min(distDES,Delta_w) * Const_DES;
+      
+      PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
+      
+      uijuij=0.0;
+      for(iDim=0;iDim<nDim;++iDim){
+        for(jDim=0;jDim<nDim;++jDim){
+          uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
+      
+      uijuij=sqrt(fabs(uijuij));
+      uijuij=max(uijuij,1e-10);
+      
+      rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
+      mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
+      
+      nu=mu/rho;
+      
+      eddy_visc = solver_container[TURB_SOL]->node[iPoint]->GetmuT();
+      nut=eddy_visc/rho;
+      k2=pow(0.41,2.0);
+      
+      /*--- The variables r_d and f_d are functions only of the eddy viscosity ---*/
+      
+      r_d= (nut)/(uijuij*k2*pow(dist_wall, 2.0));
+      f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      alpha2 = pow(0.25 - (dist_wall/Delta) , 2.0);
+      f_b = min(2.0 * exp(-9.0 * alpha2), 1.0);
+      f_d_tilde = max((1.0-f_d), f_b);
+
+      /*--- Low Reynolds number correction term ---*/
+      
+      nu_hat = node[iPoint]->GetSolution();
+      Ji   = nu_hat[0]/nu;
+      Ji_2 = Ji * Ji;
+      Ji_3 = Ji*Ji*Ji;
+      fv1  = Ji_3/(Ji_3+cv1_3);
+      fv2 = 1.0 - Ji/(1.0+Ji*fv1);
+      ft2 = ct3*exp(-ct4*Ji_2);
+      cw1 = cb1/k2+(1.0+cb2)/sigma;
+      
+      psi_2 = (1.0 - (cb1/(cw1*k2*fw_star))*(ft2 + (1.0 - ft2)*fv2))/(fv1 * max(1.0e-10,1.0-ft2));
+      psi_2 = min(100.0,psi_2);
+
+      distDES_tilde = f_d_tilde * dist_wall + (1.0 - f_d_tilde) * distDES*sqrt(psi_2);
+      
+      /*--- Set distance to the surface with IDDES distance ---*/
+
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+
+      
+//      if (config->GetZonal_DES()){
+//          dist_zonal = config->GetZonal_Dist();
+//          if (dist_wall <= dist_zonal)
+//              numerics->SetDistance(dist_wall, 0.0);
+//          else
+//              numerics->SetDistance(distDES_tilde, 0.0);
+//      }
+//      else
+//        numerics->SetDistance(distDES_tilde, 0.0);
+      
+    }
+
     /*--- Compute the source term ---*/
     
     numerics->ComputeResidual(Residual, Jacobian_i, NULL, config);
@@ -2570,20 +2990,9 @@ CTurbSSTSolver::CTurbSSTSolver(void) : CTurbSolver() {
 
 CTurbSSTSolver::CTurbSSTSolver(CGeometry *geometry, CConfig *config, unsigned short iMesh) : CTurbSolver() {
   unsigned short iVar, iDim, nLineLets;
-  unsigned long iPoint, index;
-  su2double dull_val;
+  unsigned long iPoint;
   ifstream restart_file;
   string text_line;
-  
-  unsigned short iZone = config->GetiZone();
-  unsigned short nZone = geometry->GetnZone();
-  bool restart = (config->GetRestart() || config->GetRestart_Flow());
-  bool adjoint = (config->GetContinuous_Adjoint()) || (config->GetDiscrete_Adjoint());
-  bool compressible = (config->GetKind_Regime() == COMPRESSIBLE);
-  bool incompressible = (config->GetKind_Regime() == INCOMPRESSIBLE);
-  bool dual_time = ((config->GetUnsteady_Simulation() == DT_STEPPING_1ST) ||
-                    (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
-  bool time_stepping = (config->GetUnsteady_Simulation() == TIME_STEPPING);
 
   int rank = MASTER_NODE;
 #ifdef HAVE_MPI
@@ -2597,7 +3006,7 @@ CTurbSSTSolver::CTurbSSTSolver(CGeometry *geometry, CConfig *config, unsigned sh
   Gamma = config->GetGamma();
   Gamma_Minus_One = Gamma - 1.0;
   
-  /*--- Dimension of the problem --> dependent of the turbulent model ---*/
+  /*--- Dimension of the problem --> dependent on the turbulence model. ---*/
   
   nVar = 2;
   nPoint = geometry->GetnPoint();
@@ -2707,145 +3116,31 @@ CTurbSSTSolver::CTurbSSTSolver(CGeometry *geometry, CConfig *config, unsigned sh
   lowerlimit[1] = 1.0e-4;
   upperlimit[1] = 1.0e15;
   
-  /*--- Flow infinity initialization stuff ---*/
+  /*--- Far-field flow state quantities and initialization. ---*/
   su2double rhoInf, *VelInf, muLamInf, Intensity, viscRatio, muT_Inf;
-  
+
   rhoInf    = config->GetDensity_FreeStreamND();
   VelInf    = config->GetVelocity_FreeStreamND();
   muLamInf  = config->GetViscosity_FreeStreamND();
   Intensity = config->GetTurbulenceIntensity_FreeStream();
   viscRatio = config->GetTurb2LamViscRatio_FreeStream();
-  
+
   su2double VelMag = 0;
   for (iDim = 0; iDim < nDim; iDim++)
     VelMag += VelInf[iDim]*VelInf[iDim];
-  
   VelMag = sqrt(VelMag);
-  
+
   kine_Inf  = 3.0/2.0*(VelMag*VelMag*Intensity*Intensity);
   omega_Inf = rhoInf*kine_Inf/(muLamInf*viscRatio);
-  
+
   /*--- Eddy viscosity, initialized without stress limiter at the infinity ---*/
   muT_Inf = rhoInf*kine_Inf/omega_Inf;
-  
-  /*--- Restart the solution from file information ---*/
-  if (!restart || (iMesh != MESH_0)) {
-    for (iPoint = 0; iPoint < nPoint; iPoint++)
+
+  /*--- Initialize the solution to the far-field state everywhere. ---*/
+
+  for (iPoint = 0; iPoint < nPoint; iPoint++)
     node[iPoint] = new CTurbSSTVariable(kine_Inf, omega_Inf, muT_Inf, nDim, nVar, constants, config);
-  }
-  else {
-    /*--- Restart the solution from file information ---*/
-    ifstream restart_file;
-    string filename = config->GetSolution_FlowFileName();
-    
-    /*--- Modify file name for multizone problems ---*/
-    if (nZone >1)
-      filename= config->GetMultizone_FileName(filename, iZone);
 
-    /*--- Modify file name for an unsteady restart ---*/
-    if (dual_time || time_stepping) {
-      int Unst_RestartIter;
-      if (adjoint) {
-        Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_AdjointIter()) - 1;
-      } else if (config->GetUnsteady_Simulation() == DT_STEPPING_1ST)
-      Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_RestartIter())-1;
-      else
-      Unst_RestartIter = SU2_TYPE::Int(config->GetUnst_RestartIter())-2;
-      filename = config->GetUnsteady_FileName(filename, Unst_RestartIter);
-    }
-
-    
-    /*--- Open the restart file, throw an error if this fails. ---*/
-    restart_file.open(filename.data(), ios::in);
-    if (restart_file.fail()) {
-      cout << "There is no turbulent restart file!!" << endl;
-      exit(EXIT_FAILURE);
-    }
-    
-    /*--- In case this is a parallel simulation, we need to perform the
-     Global2Local index transformation first. ---*/
-
-    map<unsigned long,unsigned long> Global2Local;
-    map<unsigned long,unsigned long>::const_iterator MI;
-    
-    /*--- Now fill array with the transform values only for local points ---*/
-    for (iPoint = 0; iPoint < nPointDomain; iPoint++) {
-      Global2Local[geometry->node[iPoint]->GetGlobalIndex()] = iPoint;
-    }
-    
-    /*--- Read all lines in the restart file ---*/
-    long iPoint_Local; unsigned long iPoint_Global = 0; string text_line; unsigned long iPoint_Global_Local = 0;
-    unsigned short rbuf_NotMatching = 0, sbuf_NotMatching = 0;
-
-    /*--- The first line is the header ---*/
-    getline (restart_file, text_line);
-    
-    
-    for (iPoint_Global = 0; iPoint_Global < geometry->GetGlobal_nPointDomain(); iPoint_Global++ ) {
-      
-      getline (restart_file, text_line);
-      
-      istringstream point_line(text_line);
-      
-      /*--- Retrieve local index. If this node from the restart file lives
-       on the current processor, we will load and instantiate the vars. ---*/
-      
-      MI = Global2Local.find(iPoint_Global);
-      if (MI != Global2Local.end()) {
-        
-        iPoint_Local = Global2Local[iPoint_Global];
-        
-        if (compressible) {
-          if (nDim == 2) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0] >> Solution[1];
-          if (nDim == 3) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0] >> Solution[1];
-        }
-        if (incompressible) {
-          if (nDim == 2) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0] >> Solution[1];
-          if (nDim == 3) point_line >> index >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> dull_val >> Solution[0] >> Solution[1];
-        }
-        
-        /*--- Instantiate the solution at this node, note that the muT_Inf should recomputed ---*/
-        node[iPoint_Local] = new CTurbSSTVariable(Solution[0], Solution[1], muT_Inf, nDim, nVar, constants, config);
-        iPoint_Global_Local++;
-      }
-
-    }
-    
-    /*--- Detect a wrong solution file ---*/
-    
-    if (iPoint_Global_Local < nPointDomain) { sbuf_NotMatching = 1; }
-    
-#ifndef HAVE_MPI
-    rbuf_NotMatching = sbuf_NotMatching;
-#else
-    SU2_MPI::Allreduce(&sbuf_NotMatching, &rbuf_NotMatching, 1, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
-#endif
-    if (rbuf_NotMatching != 0) {
-      if (rank == MASTER_NODE) {
-        cout << endl << "The solution file " << filename.data() << " doesn't match with the mesh file!" << endl;
-        cout << "It could be empty lines at the end of the file." << endl << endl;
-      }
-#ifndef HAVE_MPI
-      exit(EXIT_FAILURE);
-#else
-      MPI_Barrier(MPI_COMM_WORLD);
-      MPI_Abort(MPI_COMM_WORLD,1);
-      MPI_Finalize();
-#endif
-    }
-
-    /*--- Instantiate the variable class with an arbitrary solution
-     at any halo/periodic nodes. The initial solution can be arbitrary,
-     because a send/recv is performed immediately in the solver. ---*/
-    for (iPoint = nPointDomain; iPoint < nPoint; iPoint++) {
-      node[iPoint] = new CTurbSSTVariable(Solution[0], Solution[1], muT_Inf, nDim, nVar, constants, config);
-    }
-    
-    /*--- Close the restart file ---*/
-    restart_file.close();
-    
-  }
-  
   /*--- MPI solution ---*/
   Set_MPI_Solution(geometry, config);
   

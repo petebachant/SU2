@@ -57,6 +57,12 @@ CEulerVariable::CEulerVariable(void) : CVariable() {
   nSecondaryVarGrad = 0;
  
   Undivided_Laplacian = NULL;
+
+  Solution_New = NULL;
+  
+  Solution_Avg = NULL;
+  
+  Solution_RMS = NULL;
  
 }
 
@@ -69,7 +75,9 @@ CEulerVariable::CEulerVariable(su2double val_density, su2double *val_velocity, s
                     (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
   bool viscous = config->GetViscous();
   bool windgust = config->GetWind_Gust();
-  
+  bool classical_rk4 = (config->GetKind_TimeIntScheme_Flow() == CLASSICAL_RK4_EXPLICIT);
+  bool calculate_average = config->GetCalculate_Average();
+
   /*--- Array initialization ---*/
   
   HB_Source = NULL;
@@ -92,6 +100,12 @@ CEulerVariable::CEulerVariable(su2double val_density, su2double *val_velocity, s
   nSecondaryVarGrad = 0;
 
   Undivided_Laplacian = NULL;
+
+  Solution_New = NULL;
+    
+  Solution_Avg = NULL;
+  
+  Solution_RMS = NULL;
 
   /*--- Allocate and initialize the primitive variables and gradients ---*/
   nPrimVar = nDim+9; nPrimVarGrad = nDim+4;
@@ -157,6 +171,16 @@ CEulerVariable::CEulerVariable(su2double val_density, su2double *val_velocity, s
   Solution[nVar-1] = val_density*val_energy;
   Solution_Old[nVar-1] = val_density*val_energy;
 
+  /*--- New solution initialization for Classical RK4 ---*/
+
+  if (classical_rk4) {
+    Solution_New = new su2double[nVar];
+    Solution_New[0] = val_density;
+    for (iDim = 0; iDim < nDim; iDim++) {
+      Solution_New[iDim+1] = val_density*val_velocity[iDim];
+    }
+    Solution_New[nVar-1] = val_density*val_energy;
+  }
 
     /*--- Allocate and initialize solution for dual time strategy ---*/
   
@@ -210,6 +234,26 @@ CEulerVariable::CEulerVariable(su2double val_density, su2double *val_velocity, s
     for (iDim = 0; iDim < nDim; iDim++)
       Gradient_Secondary[iVar][iDim] = 0.0;
   }
+  
+  /*--- Allocate vector for Average of primitive variables ---*/
+  
+  if (calculate_average){
+    Solution_Avg = new su2double [nVar+1];
+    for (iVar = 0; iVar < nVar+1; iVar++)
+      Solution_Avg[iVar] = 0.0;
+
+    if (nDim == 2){
+      Solution_RMS = new su2double [nDim+2];
+      for (iVar = 0; iVar < nDim+2; iVar++)
+        Solution_RMS[iVar] = 0.0;
+    }
+    else{
+      Solution_RMS = new su2double [nDim+4];
+      for (iVar = 0; iVar < nDim+4; iVar++)
+        Solution_RMS[iVar] = 0.0;      
+    }
+    
+  }
 
 }
 
@@ -221,7 +265,9 @@ CEulerVariable::CEulerVariable(su2double *val_solution, unsigned short val_nDim,
                     (config->GetUnsteady_Simulation() == DT_STEPPING_2ND));
   bool viscous = config->GetViscous();
   bool windgust = config->GetWind_Gust();
-  
+  bool classical_rk4 = (config->GetKind_TimeIntScheme_Flow() == CLASSICAL_RK4_EXPLICIT);
+  bool calculate_average = config->GetCalculate_Average();
+
   /*--- Array initialization ---*/
   
   HB_Source = NULL;
@@ -244,7 +290,15 @@ CEulerVariable::CEulerVariable(su2double *val_solution, unsigned short val_nDim,
   nSecondaryVarGrad = 0;
  
   Undivided_Laplacian = NULL;
- 
+
+  Solution_New = NULL;
+
+  Solution_Avg = NULL;
+  
+  Solution_RMS = NULL;
+  
+  Roe_Dissipation = 0.0;
+  
     /*--- Allocate and initialize the primitive variables and gradients ---*/
   nPrimVar = nDim+9; nPrimVarGrad = nDim+4;
   if (viscous) { nSecondaryVar = 8; nSecondaryVarGrad = 2; }
@@ -298,7 +352,16 @@ CEulerVariable::CEulerVariable(su2double *val_solution, unsigned short val_nDim,
     Solution[iVar] = val_solution[iVar];
     Solution_Old[iVar] = val_solution[iVar];
   }
-  
+
+  /*--- New solution initialization for Classical RK4 ---*/
+
+  if (classical_rk4) {
+    Solution_New = new su2double[nVar];
+    for (iVar = 0; iVar < nVar; iVar++) {
+      Solution_New[iVar] = val_solution[iVar];
+    }
+  }
+
   /*--- Allocate and initializate solution for dual time strategy ---*/
   if (dual_time) {
     Solution_time_n = new su2double [nVar];
@@ -346,7 +409,24 @@ CEulerVariable::CEulerVariable(su2double *val_solution, unsigned short val_nDim,
       Gradient_Secondary[iVar][iDim] = 0.0;
   }
 
-  
+  /*--- Allocate vector for Average of conservative variables ---*/
+
+  if (calculate_average){
+    Solution_Avg = new su2double [nVar+1];
+    for (iVar = 0; iVar < nVar+1; iVar++)
+      Solution_Avg[iVar] = 0.0;
+      
+    if (nDim == 2){
+      Solution_RMS = new su2double [nDim+2];
+      for (iVar = 0; iVar < nDim+2; iVar++)
+        Solution_RMS[iVar] = 0.0;
+    }
+    else{
+      Solution_RMS = new su2double [nDim+4];
+      for (iVar = 0; iVar < nDim+4; iVar++)
+        Solution_RMS[iVar] = 0.0;      
+    }
+  }
 }
 
 CEulerVariable::~CEulerVariable(void) {
@@ -372,6 +452,12 @@ CEulerVariable::~CEulerVariable(void) {
   }
 
   if (Undivided_Laplacian != NULL) delete [] Undivided_Laplacian;
+
+  if (Solution_New != NULL) delete [] Solution_New;
+  
+  if (Solution_Avg != NULL) delete [] Solution_Avg;
+  
+  if (Solution_RMS != NULL) delete [] Solution_RMS;
   
 }
 

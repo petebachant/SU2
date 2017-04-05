@@ -539,7 +539,11 @@ private:
   bool Wrt_Dynamic;  		/*!< \brief Write dynamic data adding header and prefix. */
   bool LowFidelitySim;  /*!< \brief Compute a low fidelity simulation. */
   bool Restart,	/*!< \brief Restart solution (for direct, adjoint, and linearized problems).*/
+  Update_Restart_Params,
+  Wrt_Binary_Restart,	/*!< \brief Write binary SU2 native restart files.*/
+  Read_Binary_Restart,	/*!< \brief Read binary SU2 native restart files.*/
   Restart_Flow;	/*!< \brief Restart flow solution for adjoint and linearized problems. */
+  bool Calculate_Average; /*!< \brief Calculate averages for unsteady simulations. */
   unsigned short nMarker_Monitoring,	/*!< \brief Number of markers to monitor. */
   nMarker_Designing,					/*!< \brief Number of markers for the objective function. */
   nMarker_GeoEval,					/*!< \brief Number of markers for the objective function. */
@@ -806,10 +810,17 @@ private:
   bool Prestretch;            /*!< Read a reference geometry for optimization purposes. */
   string Prestretch_FEMFileName;         /*!< \brief File name for reference geometry. */
   unsigned long Nonphys_Points, /*!< \brief Current number of non-physical points in the solution. */
-  Nonphys_Reconstr;           /*!< \brief Current number of non-physical reconstructions for 2nd-order upwinding. */
-  bool ParMETIS;              /*!< \brief Boolean for activating ParMETIS mode (while testing). */
-  unsigned short DirectDiff;  /*!< \brief Direct Differentation mode. */
-  bool DiscreteAdjoint;       /*!< \brief AD-based discrete adjoint mode. */
+  Nonphys_Reconstr;      /*!< \brief Current number of non-physical reconstructions for 2nd-order upwinding. */
+  bool ParMETIS;      /*!< \brief Boolean for activating ParMETIS mode (while testing). */
+  unsigned short DirectDiff; /*!< \brief Direct Differentation mode. */
+  bool DiscreteAdjoint; /*!< \brief AD-based discrete adjoint mode. */
+  unsigned long Wrt_Surf_Freq_DualTime;	/*!< \brief Writing surface solution frequency for Dual Time. */
+  su2double Const_DES;   /*!< \brief Detached Eddy Simulation Constant. */
+  su2double Zonal_Dist;  /*!< \brief Zonal DES distance. */
+  bool Zonal_DES; /*!< \brief Zonal DES flag. */
+  unsigned short Kind_HybridRANSLES; /*!< \brief Kind of Hybrid RANS/LES. */
+  unsigned short Kind_RoeLowDiss;    /*!< \brief Kind of Roe scheme with low dissipation for unsteady flows. */
+  bool QCR;                   /*!< \brief Spalart-Allmaras with Quadratic Constitutive Relation, 2000 version (SA-QCR2000) . */
   su2double *default_vel_inf, /*!< \brief Default freestream velocity array for the COption class. */
   *default_eng_cyl,           /*!< \brief Default engine box array for the COption class. */
   *default_eng_val,           /*!< \brief Default engine box array values for the COption class. */
@@ -823,8 +834,11 @@ private:
   *default_grid_fix,          /*!< \brief Default fixed grid (non-deforming region) array for the COption class. */
   *default_htp_axis,          /*!< \brief Default HTP axis for the COption class. */
   *default_ffd_axis,          /*!< \brief Default FFD axis for the COption class. */
-  *default_inc_crit;          /*!< \brief Default incremental criteria array for the COption class. */
-  
+  *default_inc_crit,          /*!< \brief Default incremental criteria array for the COption class. */
+  *default_body_force;        /*!< \brief Default body force vector for the COption class. */
+  bool Body_Force;            /*!< \brief Flag to know if a body force is included in the formulation. */
+  su2double *Body_Force_Vector;  /*!< \brief Values of the prescribed body force vector. */
+
   /*--- all_options is a map containing all of the options. This is used during config file parsing
    to track the options which have not been set (so the default values can be used). Without this map
    there would be no list of all the config file options. ---*/
@@ -3983,7 +3997,25 @@ public:
    * \return Restart information, if <code>TRUE</code> then the code will use the solution as restart.
    */
   bool GetRestart(void);
-  
+
+  /*!
+   * \brief Flag for whether binary SU2 native restart files are written.
+   * \return Flag for whether binary SU2 native restart files are written, if <code>TRUE</code> then the code will output binary restart files.
+   */
+  bool GetWrt_Binary_Restart(void);
+
+  /*!
+   * \brief Flag for whether binary SU2 native restart files are read.
+   * \return Flag for whether binary SU2 native restart files are read, if <code>TRUE</code> then the code will load binary restart files.
+   */
+  bool GetRead_Binary_Restart(void);
+
+  /*!
+   * \brief Flag for whether SU2 calculates averages.
+   * \return Flag for whether SU2 calculates averages, if <code>TRUE</code> then the code will calculate averages.
+   */
+  bool GetCalculate_Average(void);
+    
   /*!
    * \brief Provides the number of varaibles.
    * \return Number of variables.
@@ -4641,7 +4673,19 @@ public:
    * \return <code>TRUE</code> if it uses the gravity force; otherwise <code>FALSE</code>.
    */
   bool GetGravityForce(void);
-  
+
+  /*!
+   * \brief Get information about the body force.
+   * \return <code>TRUE</code> if it uses a body force; otherwise <code>FALSE</code>.
+   */
+  bool GetBody_Force(void);
+
+  /*!
+   * \brief Get a pointer to the body force vector.
+   * \return A pointer to the body force vector.
+   */
+  su2double* GetBody_Force_Vector(void);
+
   /*!
    * \brief Get information about the rotational frame.
    * \return <code>TRUE</code> if there is a rotational frame; otherwise <code>FALSE</code>.
@@ -6764,7 +6808,7 @@ public:
    * \return 	Number of increments.
    */
   unsigned long GetNumberIncrements(void);
-  
+
   /*!
    * \brief Get the value of the criteria for applying incremental loading.
    * \return Value of the log10 of the residual.
@@ -6786,6 +6830,49 @@ public:
    * \brief Get the AD support.
    */
   bool GetAD_Mode(void);
+
+  /*!
+   * \brief Get the frequency for writing the surface solution file in Dual Time.
+   * \return It writes the surface solution file with this frequency.
+   */
+  unsigned long GetWrt_Surf_Freq_DualTime(void);
+    
+  /*!
+   * \brief Get the Kind of Hybrid RANS/LES.
+   * \return Verbosity level for the console output.
+   */
+  unsigned short GetKind_HybridRANSLES(void);
+
+  /*!
+   * \brief Get the Kind of Roe Low Dissipation Scheme for Unsteady flows.
+   * \return Verbosity level for the console output.
+   */
+   unsigned short GetKind_RoeLowDiss(void);
+    
+  /*!
+   * \brief Get the DES Constant.
+   * \return Verbosity level for the console output.
+   */
+   double GetConst_DES(void);
+    
+  /*!
+   * \brief Get the Zonal DES Distance.
+   * \return Verbosity level for the console output.
+   */
+  double GetZonal_Dist(void);
+   
+  /*!
+   * \brief Get Zonal DES.
+   * \return Verbosity level for the console output 
+   */
+  bool GetZonal_DES(void);
+   
+  /*!
+   * \brief Get QCR (SA-QCR2000).
+   * \return Verbosity level for the console output 
+   */
+  bool GetQCR(void);
+
 };
 
 #include "config_structure.inl"

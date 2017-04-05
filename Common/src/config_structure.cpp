@@ -451,6 +451,7 @@ void CConfig::SetPointersNull(void) {
   default_grid_fix      = NULL;
   default_inc_crit      = NULL;
   default_htp_axis      = NULL;
+  default_body_force    = NULL;
 
   Riemann_FlowDir= NULL;
   NRBC_FlowDir = NULL;
@@ -518,6 +519,7 @@ void CConfig::SetConfig_Options(unsigned short val_iZone, unsigned short val_nZo
   default_grid_fix      = new su2double[6];
   default_inc_crit      = new su2double[3];
   default_htp_axis      = new su2double[2];
+  default_body_force    = new su2double[3];
 
   // This config file is parsed by a number of programs to make it easy to write SU2
   // wrapper scripts (in python, go, etc.) so please do
@@ -547,10 +549,26 @@ void CConfig::SetConfig_Options(unsigned short val_iZone, unsigned short val_nZo
   addBoolOption("AXISYMMETRIC", Axisymmetric, false);
   /* DESCRIPTION: Add the gravity force */
   addBoolOption("GRAVITY_FORCE", GravityForce, false);
+  /* DESCRIPTION: Apply a body force as a source term (NO, YES) */
+  addBoolOption("BODY_FORCE", Body_Force, false);
+  default_body_force[0] = 0.0; default_body_force[1] = 0.0; default_body_force[2] = 0.0;
+  /* DESCRIPTION: Vector of body force values (BodyForce_X, BodyForce_Y, BodyForce_Z) */
+  addDoubleArrayOption("BODY_FORCE_VECTOR", 3, Body_Force_Vector, default_body_force);
   /* DESCRIPTION: Perform a low fidelity simulation */
   addBoolOption("LOW_FIDELITY_SIMULATION", LowFidelitySim, false);
   /*!\brief RESTART_SOL \n DESCRIPTION: Restart solution from native solution file \n Options: NO, YES \ingroup Config */
   addBoolOption("RESTART_SOL", Restart, false);
+  /*!\brief UPDATE_RESTART_PARAMS \n DESCRIPTION: Update some parameters from a metadata file when restarting \n Options: NO, YES \ingroup Config */
+  addBoolOption("UPDATE_RESTART_PARAMS", Update_Restart_Params, false);
+  /*!\brief BINARY_RESTART \n DESCRIPTION: Read / write binary SU2 native restart files. \n Options: YES, NO \ingroup Config */
+  addBoolOption("WRT_BINARY_RESTART", Wrt_Binary_Restart, true);
+  /*!\brief BINARY_RESTART \n DESCRIPTION: Read / write binary SU2 native restart files. \n Options: YES, NO \ingroup Config */
+  addBoolOption("READ_BINARY_RESTART", Read_Binary_Restart, true);
+
+  /*!\brief CALCULATE_AVERAGE \n DESCRIPTION: Calculate average of variables over unsteady simulations. \n Options: YES, NO \ingroup Config */
+  addBoolOption("CALCULATE_AVERAGE", Calculate_Average, false);
+
+
   /*!\brief SYSTEM_MEASUREMENTS \n DESCRIPTION: System of measurements \n OPTIONS: see \link Measurements_Map \endlink \n DEFAULT: SI \ingroup Config*/
   addEnumOption("SYSTEM_MEASUREMENTS", SystemMeasurements, Measurements_Map, SI);
 
@@ -955,7 +973,7 @@ void CConfig::SetConfig_Options(unsigned short val_iZone, unsigned short val_nZo
   /* DESCRIPTION: Roe coefficient */
   addDoubleOption("ROE_KAPPA", Roe_Kappa, 0.5);
   /* DESCRIPTION: Roe-Turkel preconditioning for low Mach number flows */
-  addBoolOption("ROE_TURKEL_PREC", Low_Mach_Precon, false);
+  addBoolOption("LOW_MACH_PREC", Low_Mach_Precon, false);
   /* DESCRIPTION: Post-reconstruction correction for low Mach number flows */
   addBoolOption("LOW_MACH_CORR", Low_Mach_Corr, false);
   /* DESCRIPTION: Time Step for dual time stepping simulations (s) */
@@ -1752,6 +1770,30 @@ void CConfig::SetConfig_Options(unsigned short val_iZone, unsigned short val_nZo
 
   /* DESCRIPTION: Activate ParMETIS mode for testing */
   addBoolOption("PARMETIS", ParMETIS, false);
+    
+  /*--- options that are used in the Hybrid RANS/LES Simulations  ---*/
+  /*!\par CONFIG_CATEGORY:Hybrid_RANSLES Options\ingroup Config*/
+    
+  /* DESCRIPTION: Writing surface solution file frequency for dual time */
+  addUnsignedLongOption("WRT_SURF_FREQ_DUALTIME", Wrt_Surf_Freq_DualTime, 1);
+
+  /* DESCRIPTION: DES Constant */
+  addDoubleOption("DES_CONST", Const_DES, 0.65);
+
+  /* DESCRIPTION: Zonal distance for Hybrid RANS/LES */
+  addDoubleOption("ZONAL_DISTANCE", Zonal_Dist, 1.00);
+    
+  /* DESCRIPTION: Zonal Hybrid RANS/LES*/
+  addBoolOption("ZONAL_DES", Zonal_DES, NO);
+
+  /* DESCRIPTION: Specify Hybrid RANS/LES model */
+  addEnumOption("HYBRID_RANSLES", Kind_HybridRANSLES, HybridRANSLES_Map, NO_HYBRIDRANSLES);
+    
+  /* DESCRIPTION:  Roe with low dissipation for unsteady flows */
+  addEnumOption("ROE_LOW_DISSIPATION", Kind_RoeLowDiss, RoeLowDiss_Map, NO_ROELOWDISS);
+
+  /* DESCRIPTION: Activate SA Quadratic Constitutive Relation, 2000 version */
+  addBoolOption("SA_QCR", QCR, false);
   
   /* END_CONFIG_OPTIONS */
 
@@ -3089,6 +3131,14 @@ void CConfig::SetPostprocessing(unsigned short val_software, unsigned short val_
     }
   }
 
+  /*--- Check for the calculation of averages. Disable if it is not
+   an unsteady calculation with a restart. ---*/
+
+  if (Calculate_Average) {
+    if (Unsteady_Simulation == NO || !Restart)
+      Calculate_Average = false;
+  }
+
   /*--- Check for 2nd order w/ limiting for JST and correct ---*/
   
   if ((Kind_ConvNumScheme_Flow == SPACE_CENTERED) && (Kind_Centered_Flow == JST) && (SpatialOrder_Flow == SECOND_ORDER_LIMITER))
@@ -3687,6 +3737,9 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
           case SA:     cout << "Spalart Allmaras" << endl; break;
           case SA_NEG: cout << "Negative Spalart Allmaras" << endl; break;
           case SST:    cout << "Menter's SST"     << endl; break;
+          case SA_E:   cout << "Edwards Spalart Allmaras" << endl; break;
+          case SA_COMP:   cout << "Compressibility Correction Spalart Allmaras" << endl; break;
+          case SA_E_COMP:   cout << "Compressibility Correction Edwards Spalart Allmaras" << endl; break;
         }
         break;
       case POISSON_EQUATION: cout << "Poisson equation." << endl; break;
@@ -3755,6 +3808,8 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
     }
 
     if (Restart) {
+      if (Read_Binary_Restart) cout << "Reading and writing binary SU2 native restart files." << endl;
+      else cout << "Reading and writing ASCII SU2 native restart files." << endl;
       if (!ContinuousAdjoint && Kind_Solver != FEM_ELASTICITY) cout << "Read flow solution from: " << Solution_FlowFileName << "." << endl;
       if (ContinuousAdjoint) cout << "Read adjoint solution from: " << Solution_AdjFileName << "." << endl;
       if (Kind_Solver == FEM_ELASTICITY) cout << "Read structural solution from: " << Solution_FEMFileName << "." << endl;
@@ -4128,7 +4183,9 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
 				if (Kind_Upwind_Flow == HLLC)	cout << "HLLC solver for the flow inviscid terms."<< endl;
 				if (Kind_Upwind_Flow == SW)	cout << "Steger-Warming solver for the flow inviscid terms."<< endl;
 				if (Kind_Upwind_Flow == MSW)	cout << "Modified Steger-Warming solver for the flow inviscid terms."<< endl;
-        if (Kind_Upwind_Flow == CUSP)	cout << "CUSP solver for the flow inviscid terms."<< endl;
+              if (Kind_Upwind_Flow == CUSP)	cout << "CUSP solver for the flow inviscid terms."<< endl;
+              if (Kind_Upwind_Flow == L2ROE) cout << "L2ROE Low Mach ROE solver for the flow inviscid terms."<< endl;
+              if (Kind_Upwind_Flow == LMROE) cout << "Rieper Low Mach ROE solver for the flow inviscid terms."<< endl;
         switch (SpatialOrder_Flow) {
           case FIRST_ORDER: cout << "First order integration." << endl; break;
           case SECOND_ORDER: cout << "Second order integration." << endl; break;
@@ -4141,6 +4198,10 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
               case BARTH_JESPERSEN:
                 cout << "Barth-Jespersen slope-limiting method." << endl;
                 break;
+              case VENKATAKRISHNAN_MOD:
+                cout << "Venkatakrishnan slope-limiting method, with constant:. "<< endl;
+                break;
+                    
             }
             break;
         }
@@ -4350,6 +4411,12 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
               cout << "A Linelet method is used for smoothing the linear system." << endl;
               break;
           }
+          break;
+        case CLASSICAL_RK4_EXPLICIT:
+          cout << "Classical RK4 explicit method for the flow equations." << endl;
+          cout << "Number of steps: " << 4 << endl;
+          cout << "Time coefficients: {0.5, 0.5, 1, 1}" << endl;
+          cout << "Function coefficients: {1/6, 1/3, 1/3, 1/6}" << endl;
           break;
       }
     }
@@ -5511,6 +5578,7 @@ CConfig::~CConfig(void) {
   if (default_grid_fix      != NULL) delete [] default_grid_fix;
   if (default_inc_crit      != NULL) delete [] default_inc_crit;
   if (default_htp_axis      != NULL) delete [] default_htp_axis;
+  if (default_body_force    != NULL) delete [] default_body_force;
 
   if (FFDTag != NULL) delete [] FFDTag;
   if (nDV_Value != NULL) delete [] nDV_Value;

@@ -325,15 +325,18 @@ void CIntegration::Time_Integration(CGeometry *geometry, CSolver **solver_contai
   if (KindSolver != FEM_ELASTICITY) {
 
     switch (config->GetKind_TimeIntScheme()) {
-    case (RUNGE_KUTTA_EXPLICIT):
-      solver_container[MainSolver]->ExplicitRK_Iteration(geometry, solver_container, config, iRKStep);
-      break;
-    case (EULER_EXPLICIT):
-      solver_container[MainSolver]->ExplicitEuler_Iteration(geometry, solver_container, config);
-      break;
-    case (EULER_IMPLICIT):
-      solver_container[MainSolver]->ImplicitEuler_Iteration(geometry, solver_container, config);
-      break;
+      case (RUNGE_KUTTA_EXPLICIT):
+        solver_container[MainSolver]->ExplicitRK_Iteration(geometry, solver_container, config, iRKStep);
+        break;
+      case (CLASSICAL_RK4_EXPLICIT):
+        solver_container[MainSolver]->ClassicalRK4_Iteration(geometry, solver_container, config, iRKStep);
+        break;
+      case (EULER_EXPLICIT):
+        solver_container[MainSolver]->ExplicitEuler_Iteration(geometry, solver_container, config);
+        break;
+      case (EULER_IMPLICIT):
+        solver_container[MainSolver]->ImplicitEuler_Iteration(geometry, solver_container, config);
+        break;
     }
 
    /*--- Structural time integration schemes ---*/
@@ -567,9 +570,46 @@ void CIntegration::Convergence_Monitoring(CGeometry *geometry, CConfig *config, 
 }
 
 
-void CIntegration::SetDualTime_Solver(CGeometry *geometry, CSolver *solver, CConfig *config, unsigned short iMesh) {
+void CIntegration::SetDualTime_Solver(CGeometry *geometry, CSolver *solver, CConfig *config, unsigned short iMesh, unsigned short SolContainer_Position) {
+
+  unsigned short iVar, iDim;
   unsigned long iPoint;
+
+  bool calculate_average = config->GetCalculate_Average();
+  su2double *Solution_Avg_Aux;
   
+  /*--- Adding the solution for Calculate Averages ---*/
+
+  if (SolContainer_Position == FLOW_SOL && calculate_average) {
+    for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
+      Solution_Avg_Aux = solver->node[iPoint]->GetSolution();
+      solver->node[iPoint]->SetSolution_Avg(0, Solution_Avg_Aux[0]);
+      for ( iDim = 0; iDim < geometry->GetnDim(); iDim++)
+        solver->node[iPoint]->SetSolution_Avg(iDim+1, Solution_Avg_Aux[iDim+1]/Solution_Avg_Aux[0]);      
+      solver->node[iPoint]->SetSolution_Avg(solver->GetnVar()-1, Solution_Avg_Aux[solver->GetnVar()-1]/Solution_Avg_Aux[0]);
+      solver->node[iPoint]->SetSolution_Avg(solver->GetnVar(), solver->node[iPoint]->GetPressure());            
+//      for (iVar = 0; iVar < solver->GetnVar(); iVar++) {
+//        solver->node[iPoint]->AddSolution_Avg(iVar, solver->node[iPoint]->GetSolution(iVar));
+//      }
+//      solver->node[iPoint]->AddSolution_Avg(solver->GetnVar(), solver->node[iPoint]->GetPressure());
+      if (geometry->GetnDim() == 2){
+        for ( iDim = 0; iDim < geometry->GetnDim(); iDim++)
+          solver->node[iPoint]->AddSolution_RMS(iDim, Solution_Avg_Aux[iDim+1]/Solution_Avg_Aux[0] * Solution_Avg_Aux[iDim+1]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(2, Solution_Avg_Aux[1]/Solution_Avg_Aux[0] * Solution_Avg_Aux[2]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(3, solver->node[iPoint]->GetPressure() * solver->node[iPoint]->GetPressure());
+      }
+      else{
+        for ( iDim = 0; iDim < geometry->GetnDim(); iDim++)
+          solver->node[iPoint]->AddSolution_RMS(iDim, Solution_Avg_Aux[iDim+1]/Solution_Avg_Aux[0] * Solution_Avg_Aux[iDim+1]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(3, Solution_Avg_Aux[1]/Solution_Avg_Aux[0] * Solution_Avg_Aux[2]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(4, Solution_Avg_Aux[1]/Solution_Avg_Aux[0] * Solution_Avg_Aux[3]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(5, Solution_Avg_Aux[2]/Solution_Avg_Aux[0] * Solution_Avg_Aux[3]/Solution_Avg_Aux[0]);
+        solver->node[iPoint]->AddSolution_RMS(6, solver->node[iPoint]->GetPressure() * solver->node[iPoint]->GetPressure());
+      }
+
+    }
+  }
+
   for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
     solver->node[iPoint]->Set_Solution_time_n1();
     solver->node[iPoint]->Set_Solution_time_n();
