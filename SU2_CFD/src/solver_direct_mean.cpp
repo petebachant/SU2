@@ -11784,7 +11784,7 @@ void CEulerSolver::BC_Inlet(CGeometry *geometry, CSolver **solver_container,
       
       // It changes the inlet kind so the velocity profile can be used in addition to an inlet for the wind tunnel.
       if (Marker_Tag == "jet_top" || Marker_Tag == "jet_bottom" || Marker_Tag == "jet_starboard" || Marker_Tag == "jet_port") {
-        Kind_Inlet = VEL_PROFILE;
+        Kind_Inlet = MASS_FLOW;
       }
       
 
