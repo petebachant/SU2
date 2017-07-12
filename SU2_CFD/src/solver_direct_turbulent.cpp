@@ -4,8 +4,8 @@
  * \author F. Palacios, A. Bueno
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -1499,29 +1499,17 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       numerics->SetDistance(geometry->node[iPoint]->GetWall_Distance(), 0.0);
     }
     else if (config->GetKind_HybridRANSLES()==SA_DES){
-
-      dist_wall = geometry->node[iPoint]->GetWall_Distance();
-      Delta = pow(geometry -> node[iPoint]->GetVolume(),1.0/3.0);
-      distDES = Const_DES * Delta;
-      distDES_tilde = min(distDES,dist_wall);
-      
-      /*--- Set distance to the surface with DES distance ---*/
-      
-      numerics->SetDistance(distDES_tilde, 0.0);
-    }
-    else if (config->GetKind_HybridRANSLES()==SA_DDES){
       su2double *Coord_i, *Coord_j, aux_delta;
       unsigned short nNeigh, iNeigh;
       unsigned long NumNeigh;
       
       /*--- Marcello Righi's Delta max ---*/
       
-        Coord_i = geometry->node[iPoint]->GetCoord();
-        nNeigh = geometry->node[iPoint]->GetnPoint();
-        
-        Delta=0.;
-        
-        for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      
+      Delta=0.;      
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
         NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
         Coord_j = geometry->node[NumNeigh]->GetCoord();
         
@@ -1530,8 +1518,37 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
           aux_delta += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
         
         Delta=max(Delta,sqrt(aux_delta));
+      }
+
+      distDES = Const_DES * Delta;
+      distDES_tilde = min(distDES,dist_wall);
+      
+      /*--- Set distance to the surface with DES distance ---*/
+      
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+    }
+    else if (config->GetKind_HybridRANSLES()==SA_DDES){
+      su2double *Coord_i, *Coord_j, aux_delta;
+      unsigned short nNeigh, iNeigh;
+      unsigned long NumNeigh;
+      
+      /*--- Marcello Righi's Delta max ---*/
+      
+      Coord_i = geometry->node[iPoint]->GetCoord();
+      nNeigh = geometry->node[iPoint]->GetnPoint();
+      
+      Delta=0.;
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
         
-        }
+        aux_delta=0.;
+        for (iDim=0;iDim<nDim;++iDim)
+          aux_delta += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+        
+        Delta=max(Delta,sqrt(aux_delta));
+      }
 
       dist_wall = geometry->node[iPoint]->GetWall_Distance();
       
@@ -1577,16 +1594,19 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       /*--- Set distance to the surface with DDES distance ---*/
 
       numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
     }
     else if (config->GetKind_HybridRANSLES()==SA_ZDES){
       su2double *Coord_i, *Coord_j, deltax=0.0, deltay=0.0, deltaz=0.0, aux_delta, *Vorticity_i;
       su2double Omega, ratio_Omegax, ratio_Omegay, ratio_Omegaz;
+      su2double aux_delta_ddes, delta_ddes;
       unsigned short nNeigh, iNeigh;
       unsigned long NumNeigh;
       
       Coord_i = geometry->node[iPoint]->GetCoord();
       nNeigh = geometry->node[iPoint]->GetnPoint();
       
+      delta_ddes = 0.0;
       for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
           NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
           Coord_j = geometry->node[NumNeigh]->GetCoord();
@@ -1597,6 +1617,11 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
           if (nDim == 3){
               aux_delta = abs(Coord_j[2] - Coord_i[2]);
               deltaz = max(deltaz,aux_delta);}
+              
+          aux_delta_ddes = 0.0;
+          for (iDim=0;iDim<nDim;++iDim)
+            aux_delta_ddes += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+          delta_ddes=max(delta_ddes,sqrt(aux_delta_ddes));
       }
       
       Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
@@ -1604,12 +1629,11 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       ratio_Omegax = Vorticity_i[0]/Omega;
       ratio_Omegay = Vorticity_i[1]/Omega;
       ratio_Omegaz = Vorticity_i[2]/Omega;
-      
+
       Delta =sqrt(pow(ratio_Omegax,2.0)*deltay*deltaz + pow(ratio_Omegay,2.0)*deltax*deltaz + pow(ratio_Omegaz,2.0)*deltax*deltay);
       
       dist_wall = geometry->node[iPoint]->GetWall_Distance();
       
-      distDES = Const_DES * Delta;
       PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
       
       uijuij=0.0;
@@ -1619,7 +1643,6 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       
       uijuij=sqrt(fabs(uijuij));
       uijuij=max(uijuij,1e-10);
-      
       
       rho = solver_container[FLOW_SOL]->node[iPoint]->GetDensity();
       mu  = solver_container[FLOW_SOL]->node[iPoint]->GetLaminarViscosity();
@@ -1631,6 +1654,10 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       k2=pow(0.41,2.0);
       r_d= (nut+nu)/(uijuij*k2*pow(dist_wall, 2.0));
       f_d= 1.0-tanh(pow(8.0*r_d,3.0));
+      
+      if (f_d < 0.99){
+        Delta = delta_ddes;
+      }
       
       /*--- Low Reynolds number correction tem ---*/
       nu_hat = node[iPoint]->GetSolution();
@@ -1646,10 +1673,13 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       psi_2 = min(100.0,psi_2);
       
       //distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES*sqrt(psi_2)));
+      
+      distDES = Const_DES * Delta;
       distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES));
       
       /*--- Set distance to the surface with DDES distance ---*/
       numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
     }
     else if (config->GetKind_HybridRANSLES()==SA_EDDES){
           
@@ -1662,6 +1692,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       su2double **PrimVar_Grad_j, f_kh, f_kh_lim;
       su2double Strain_i[3][3], Strain_j[3][3],StrainDotVort[3]={0.0,0.0,0.0},numVecVort[3]={0.0,0.0,0.0};
       su2double numerator, denominator, trace0, trace1, VTM_i, ln_max, aux_ln, f_max=1.0, f_min=0.1, a1=0.15, a2=0.3;
+      su2double aux_delta_ddes, delta_ddes;
       unsigned short nNeigh, iNeigh, i,j;
       
       unsigned long NumNeigh;
@@ -1689,7 +1720,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
         Strain_i[1][2] = 0.5*(PrimVar_Grad[3][1] + PrimVar_Grad[2][2]);
         Strain_i[2][0] = 0.5*(PrimVar_Grad[1][2] + PrimVar_Grad[3][0]);
         Strain_i[2][1] = 0.5*(PrimVar_Grad[2][2] + PrimVar_Grad[3][1]);
-        Strain_i[2][0] = PrimVar_Grad[3][2];
+        Strain_i[2][2] = PrimVar_Grad[3][2];
       }
       
       Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
@@ -1724,6 +1755,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       VTM_i = (numerator/denominator) * max(1.0,0.2*nu/nut);
       
       ln_max=0.0;
+      delta_ddes=0.0;
       for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
         NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
         Coord_j = geometry->node[NumNeigh]->GetCoord();
@@ -1736,6 +1768,12 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
         ln[2] = delta_i[0]*ratio_Omega[1] - delta_i[1]*ratio_Omega[0];
         aux_ln = sqrt(ln[0]*ln[0] + ln[1]*ln[1] + ln[2]*ln[2]);
         ln_max = max(ln_max,aux_ln);
+        
+        aux_delta_ddes = 0.0;
+        for (iDim=0;iDim<nDim;++iDim)
+          aux_delta_ddes += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+        delta_ddes=max(delta_ddes,sqrt(aux_delta_ddes));
+        
         
         PrimVar_Grad_j=solver_container[FLOW_SOL]->node[NumNeigh]->GetGradient_Primitive();
         
@@ -1750,7 +1788,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
           Strain_j[1][2] = 0.5*(PrimVar_Grad_j[3][1] + PrimVar_Grad_j[2][2]);
           Strain_j[2][0] = 0.5*(PrimVar_Grad_j[1][2] + PrimVar_Grad_j[3][0]);
           Strain_j[2][1] = 0.5*(PrimVar_Grad_j[2][2] + PrimVar_Grad_j[3][1]);
-          Strain_j[2][0] = PrimVar_Grad_j[3][2];
+          Strain_j[2][2] = PrimVar_Grad_j[3][2];
         }
         
         Vorticity_j = solver_container[FLOW_SOL]->node[NumNeigh]->GetVorticity();
@@ -1790,22 +1828,33 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       r_d= (nut+nu)/(uijuij*k2*pow(dist_wall, 2.0));
       f_d= 1.0-tanh(pow(8.0*r_d,3.0));
       
-      if (f_d < (1.0-0.01)) {
+/*      if (f_d < (1.0-0.01)) {
         f_kh_lim = 1.0;
       }
       else {
         f_kh_lim = f_kh;
       }
+      Delta = (ln_max/sqrt(3.0)) * f_kh_lim;*/
       
-      Delta = (ln_max/sqrt(3.0)) * f_kh_lim;
+      Delta = (ln_max/sqrt(3.0)) * f_kh;
+      if (f_d < 0.999){
+        Delta = delta_ddes;
+      }
+      
       distDES = Const_DES * Delta;
       
       distDES_tilde=dist_wall-f_d*max(0.0,(dist_wall-distDES));
       
       /*--- Set distance to the surface with DDES distance ---*/
       numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+      
     }
     else if (config->GetKind_HybridRANSLES()==SA_IDDES){
+      
+      /*--- Shur et al. A hybrid RANS-LES approach with delayed-DES and wall-modelled LES capabilities, 2008 ---*/
+      /*--- IDDES without turbulent inflow content (fe = 0.0), omitted here for simplification ---*/
+      
       su2double *Coord_i, *Coord_j, aux_delta, Delta_min, aux_min;
       su2double alpha2, f_b, f_d_tilde, dist_zonal;
       unsigned short nNeigh, iNeigh;
@@ -1820,7 +1869,14 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
         NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
         Coord_j = geometry->node[NumNeigh]->GetCoord();
         
-        aux_delta = 0.0;
+        aux_delta=0.;
+        for (iDim=0;iDim<nDim;++iDim){
+          aux_delta += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+        }
+        
+        Delta = max(Delta,sqrt(aux_delta));
+        Delta_min =  min(Delta_min,sqrt(aux_delta));
+/*        aux_delta = 0.0;
         aux_min = 0.0;
         for (iDim=0;iDim<nDim;++iDim){
           aux_delta = max(aux_delta,Coord_j[iDim]-Coord_i[iDim]);
@@ -1828,12 +1884,11 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
         }
         
         Delta_min = min(Delta_min, aux_min);
-        Delta = max(Delta,aux_delta);
+        Delta = max(Delta,aux_delta);*/
       }
       
       dist_wall = geometry->node[iPoint]->GetWall_Distance();
       
-      //distDES = Const_DES * Delta;
       
       distDES = max(cw_iddes*dist_wall, cw_iddes*Delta);
       distDES = max(distDES, Delta_min);
@@ -1886,15 +1941,18 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       
       /*--- Set distance to the surface with IDDES distance ---*/
       
-      if (config->GetZonal_DES()){
-        dist_zonal = config->GetZonal_Dist();
-        if (dist_wall <= dist_zonal)
-          numerics->SetDistance(dist_wall, 0.0);
-        else
-          numerics->SetDistance(distDES_tilde, 0.0);
-      }
-      else
-        numerics->SetDistance(distDES_tilde, 0.0);
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+      
+//      if (config->GetZonal_DES()){
+//        dist_zonal = config->GetZonal_Dist();
+//        if (dist_wall <= dist_zonal)
+//          numerics->SetDistance(dist_wall, 0.0);
+//        else
+//          numerics->SetDistance(distDES_tilde, 0.0);
+//      }
+//      else
+//        numerics->SetDistance(distDES_tilde, 0.0);
       
     }
     else if (config->GetKind_HybridRANSLES()==SA_IZDES){
@@ -1907,7 +1965,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       
       Coord_i = geometry->node[iPoint]->GetCoord();
       nNeigh = geometry->node[iPoint]->GetnPoint();
-      
+/*      
       Delta = 0.0;
       Delta_min = 0.0;
       for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
@@ -1926,6 +1984,26 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
         deltax = max(deltax, abs(Coord_j[0] - Coord_i[0]));
         deltay = max(deltay, abs(Coord_j[1] - Coord_i[1]));
         deltaz = max(deltaz, abs(Coord_j[2] - Coord_i[2]));
+      }*/
+      
+      Delta = 0.0;
+      Delta_min = 0.0;
+      for (iNeigh=0;iNeigh<nNeigh;++iNeigh){
+        NumNeigh = geometry->node[iPoint]->GetPoint(iNeigh);
+        Coord_j = geometry->node[NumNeigh]->GetCoord();
+        
+        aux_delta=0.;
+        for (iDim=0;iDim<nDim;++iDim){
+          aux_delta += pow((Coord_j[iDim]-Coord_i[iDim]),2.);
+        }
+        
+        Delta = max(Delta,sqrt(aux_delta));
+        Delta_min =  min(Delta_min,sqrt(aux_delta));
+        
+        deltax = max(deltax,abs(Coord_j[0] - Coord_i[0]));
+        deltay = max(deltay,abs(Coord_j[1] - Coord_i[1]));
+        if (nDim == 3){
+          deltaz = max(deltaz,abs(Coord_j[2] - Coord_i[2]));}
       }
                 
       Vorticity_i = solver_container[FLOW_SOL]->node[iPoint]->GetVorticity();
@@ -1940,6 +2018,8 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       
       distDES = max(cw_iddes*dist_wall, cw_iddes*Delta);
       distDES = max(distDES, Delta_min);
+      
+      /*--- Replacing only the outer part of the IDDES grid filter ---*/
       distDES = min(distDES,Delta_w) * Const_DES;
       
       PrimVar_Grad=solver_container[FLOW_SOL]->node[iPoint]->GetGradient_Primitive();
@@ -1947,6 +2027,7 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       uijuij=0.0;
       for(iDim=0;iDim<nDim;++iDim){
         for(jDim=0;jDim<nDim;++jDim){
+          
           uijuij+= PrimVar_Grad[1+iDim][jDim]*PrimVar_Grad[1+iDim][jDim];}}
       
       uijuij=sqrt(fabs(uijuij));
@@ -1987,6 +2068,10 @@ void CTurbSASolver::Source_Residual(CGeometry *geometry, CSolver **solver_contai
       distDES_tilde = f_d_tilde * dist_wall + (1.0 - f_d_tilde) * distDES*sqrt(psi_2);
       
       /*--- Set distance to the surface with IDDES distance ---*/
+
+      numerics->SetDistance(distDES_tilde, 0.0);
+      solver_container[FLOW_SOL]->node[iPoint]->SetDES_LengthScale(distDES_tilde);
+
       
 //      if (config->GetZonal_DES()){
 //          dist_zonal = config->GetZonal_Dist();

@@ -4,8 +4,8 @@
  * \author F. Palacios, T. Economon
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -2078,13 +2078,6 @@ void COutput::MergeSolution(CConfig *config, CGeometry *geometry, CSolver **solv
   nVar_Consv = nVar_First + nVar_Second + nVar_Third;
   nVar_Total = nVar_Consv;
   
-  if ((Kind_Solver == DISC_ADJ_EULER)         ||
-      (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
-      (Kind_Solver == DISC_ADJ_RANS)) {
-    iVar_Sens    = nVar_Total; nVar_Total += 1;
-    iVar_SensDim = nVar_Total; nVar_Total += nDim;
-  }
-
   if (!config->GetLow_MemoryOutput()) {
     
     /*--- Add the limiters ---*/
@@ -2161,6 +2154,13 @@ void COutput::MergeSolution(CConfig *config, CGeometry *geometry, CSolver **solv
       iVar_FEA_Stress  = nVar_Total; nVar_Total += 3;
       if (geometry->GetnDim() == 3) {iVar_FEA_Stress_3D = nVar_Total; nVar_Total += 3;}
       iVar_FEA_Extra = nVar_Total; nVar_Total += 1;
+    }
+    
+    if ((Kind_Solver == DISC_ADJ_EULER)         ||
+        (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
+        (Kind_Solver == DISC_ADJ_RANS)) {
+      iVar_Sens    = nVar_Total; nVar_Total += 1;
+      iVar_SensDim = nVar_Total; nVar_Total += nDim;
     }
     
     if (config->GetExtraOutput()) {
@@ -2406,66 +2406,7 @@ void COutput::MergeSolution(CConfig *config, CGeometry *geometry, CSolver **solv
     }
     
   }
-
-  if ((Kind_Solver == DISC_ADJ_EULER)    ||
-      (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
-      (Kind_Solver == DISC_ADJ_RANS)) {
-    /*--- Loop over this partition to collect the current variable ---*/
-
-    jPoint = 0;
-    for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
-
-      /*--- Check for halos & write only if requested ---*/
-
-      if (!Local_Halo[iPoint] || Wrt_Halo) {
-
-        /*--- Load buffers with the skin friction, heat transfer, y+ variables. ---*/
-
-        Buffer_Send_Var[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(0);
-        Buffer_Send_Res[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(1);
-        if (nDim == 3)
-          Buffer_Send_Vol[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(2);
-        jPoint++;
-      }
-    }
-
-    /*--- Gather the data on the master node. ---*/
-
-#ifdef HAVE_MPI
-    SU2_MPI::Gather(Buffer_Send_Var, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Var, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
-    SU2_MPI::Gather(Buffer_Send_Res, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Res, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
-    if (nDim == 3)
-      SU2_MPI::Gather(Buffer_Send_Vol, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Vol, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
-#else
-    for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Var[iPoint] = Buffer_Send_Var[iPoint];
-    for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Res[iPoint] = Buffer_Send_Res[iPoint];
-    if (nDim == 3)
-      for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Vol[iPoint] = Buffer_Send_Vol[iPoint];
-#endif
-
-    /*--- The master node unpacks and sorts this variable by global index ---*/
-
-    if (rank == MASTER_NODE) {
-      jPoint = 0; iVar = iVar_SensDim;
-      for (iProcessor = 0; iProcessor < size; iProcessor++) {
-        for (iPoint = 0; iPoint < Buffer_Recv_nPoint[iProcessor]; iPoint++) {
-
-          /*--- Get global index, then loop over each variable and store ---*/
-
-          iGlobal_Index = Buffer_Recv_GlobalIndex[jPoint];
-          Data[iVar+0][iGlobal_Index] = Buffer_Recv_Var[jPoint];
-          Data[iVar+1][iGlobal_Index] = Buffer_Recv_Res[jPoint];
-          if (nDim == 3)
-            Data[iVar+2][iGlobal_Index] = Buffer_Recv_Vol[jPoint];
-          jPoint++;
-        }
-
-        /*--- Adjust jPoint to index of next proc's data in the buffers. ---*/
-
-        jPoint = (iProcessor+1)*nBuffer_Scalar;
-      }
-    }
-  }
+  
   if (!config->GetLow_MemoryOutput()) {
     
     /*--- Additional communication routine for the grid velocity. Note that
@@ -3045,6 +2986,66 @@ void COutput::MergeSolution(CConfig *config, CGeometry *geometry, CSolver **solv
             Data[iVar+0][iGlobal_Index] = Buffer_Recv_Var[jPoint];
             if (!config->GetDiscrete_Adjoint())
               Data[iVar+1][iGlobal_Index] = Buffer_Recv_Res[jPoint];
+            jPoint++;
+          }
+          
+          /*--- Adjust jPoint to index of next proc's data in the buffers. ---*/
+          
+          jPoint = (iProcessor+1)*nBuffer_Scalar;
+        }
+      }
+    }
+    
+    if ((Kind_Solver == DISC_ADJ_EULER)    ||
+        (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
+        (Kind_Solver == DISC_ADJ_RANS)) {
+      /*--- Loop over this partition to collect the current variable ---*/
+      
+      jPoint = 0;
+      for (iPoint = 0; iPoint < geometry->GetnPoint(); iPoint++) {
+        
+        /*--- Check for halos & write only if requested ---*/
+        
+        if (!Local_Halo[iPoint] || Wrt_Halo) {
+          
+          /*--- Load buffers with the skin friction, heat transfer, y+ variables. ---*/
+          
+          Buffer_Send_Var[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(0);
+          Buffer_Send_Res[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(1);
+          if (nDim == 3)
+            Buffer_Send_Vol[jPoint] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(2);
+          jPoint++;
+        }
+      }
+      
+      /*--- Gather the data on the master node. ---*/
+      
+#ifdef HAVE_MPI
+      SU2_MPI::Gather(Buffer_Send_Var, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Var, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
+      SU2_MPI::Gather(Buffer_Send_Res, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Res, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
+      if (nDim == 3)
+        SU2_MPI::Gather(Buffer_Send_Vol, nBuffer_Scalar, MPI_DOUBLE, Buffer_Recv_Vol, nBuffer_Scalar, MPI_DOUBLE, MASTER_NODE, MPI_COMM_WORLD);
+#else
+      for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Var[iPoint] = Buffer_Send_Var[iPoint];
+      for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Res[iPoint] = Buffer_Send_Res[iPoint];
+      if (nDim == 3)
+        for (iPoint = 0; iPoint < nBuffer_Scalar; iPoint++) Buffer_Recv_Vol[iPoint] = Buffer_Send_Vol[iPoint];
+#endif
+      
+      /*--- The master node unpacks and sorts this variable by global index ---*/
+      
+      if (rank == MASTER_NODE) {
+        jPoint = 0; iVar = iVar_SensDim;
+        for (iProcessor = 0; iProcessor < size; iProcessor++) {
+          for (iPoint = 0; iPoint < Buffer_Recv_nPoint[iProcessor]; iPoint++) {
+            
+            /*--- Get global index, then loop over each variable and store ---*/
+            
+            iGlobal_Index = Buffer_Recv_GlobalIndex[jPoint];
+            Data[iVar+0][iGlobal_Index] = Buffer_Recv_Var[jPoint];
+            Data[iVar+1][iGlobal_Index] = Buffer_Recv_Res[jPoint];
+            if (nDim == 3)
+              Data[iVar+2][iGlobal_Index] = Buffer_Recv_Vol[jPoint];
             jPoint++;
           }
           
@@ -5559,32 +5560,31 @@ void COutput::SetConvHistory_Body(ofstream *ConvHist_file,
             ConvHist_file[0] << begin << adjoint_coeff << adj_flow_resid << end;
             ConvHist_file[0].flush();
           }
-          if (DualTime_Iteration || !Unsteady){
-            cout.precision(6);
-            cout.setf(ios::fixed, ios::floatfield);
-            if (compressible) {
-              cout.width(15); cout << log10(residual_adjflow[0]);
-              cout.width(15); cout << log10(residual_adjflow[nDim+1]);
-            }
-            if (incompressible) {
-              cout.width(17); cout << log10(residual_adjflow[0]);
-              cout.width(16); cout << log10(residual_adjflow[1]);
-            }
-
-            if (disc_adj) {
-              cout.precision(4);
-              cout.setf(ios::scientific, ios::floatfield);
-              cout.width(14); cout << Total_Sens_Press;
-              cout.width(14); cout << Total_Sens_AoA;
-            }else {
-              cout.precision(4);
-              cout.setf(ios::scientific, ios::floatfield);
-              cout.width(14); cout << Total_Sens_Geo;
-              cout.width(14); cout << Total_Sens_AoA;
-            }
-            cout << endl;
-            cout.unsetf(ios_base::floatfield);
+          
+          cout.precision(6);
+          cout.setf(ios::fixed, ios::floatfield);
+          if (compressible) {
+            cout.width(15); cout << log10(residual_adjflow[0]);
+            cout.width(15); cout << log10(residual_adjflow[nDim+1]);
           }
+          if (incompressible) {
+            cout.width(17); cout << log10(residual_adjflow[0]);
+            cout.width(16); cout << log10(residual_adjflow[1]);
+          }
+          
+          if (disc_adj) {
+            cout.precision(4);
+            cout.setf(ios::scientific, ios::floatfield);
+            cout.width(14); cout << Total_Sens_Press;
+            cout.width(14); cout << Total_Sens_AoA;
+          }else {
+            cout.precision(4);
+            cout.setf(ios::scientific, ios::floatfield);
+            cout.width(14); cout << Total_Sens_Geo;
+              cout.width(14); cout << Total_Sens_AoA;
+            }
+          cout << endl;
+          cout.unsetf(ios_base::floatfield);          
 
           break;
           
@@ -5597,36 +5597,35 @@ void COutput::SetConvHistory_Body(ofstream *ConvHist_file,
             ConvHist_file[0] << end;
             ConvHist_file[0].flush();
           }
-          if (DualTime_Iteration || !Unsteady){
-            cout.precision(6);
-            cout.setf(ios::fixed, ios::floatfield);
-            cout.width(17); cout << log10(residual_adjflow[0]);
-            if (!config[val_iZone]->GetFrozen_Visc()) {
-              cout.width(17); cout << log10(residual_adjturbulent[0]);
-            }
-            else {
-              if (compressible) {
-                if (geometry[val_iZone][FinestMesh]->GetnDim() == 2 ) { cout.width(15); cout << log10(residual_adjflow[3]); }
-                else { cout.width(15); cout << log10(residual_adjflow[4]); }
-              }
-              if (incompressible) {
-                cout.width(15); cout << log10(residual_adjflow[1]);
-              }
-            }
-            if (disc_adj) {
-              cout.precision(4);
-              cout.setf(ios::scientific, ios::floatfield);
-              cout.width(14); cout << Total_Sens_Press;
-              cout.width(14); cout << Total_Sens_AoA;
-            }else {
-              cout.precision(4);
-              cout.setf(ios::scientific, ios::floatfield);
-              cout.width(14); cout << Total_Sens_Geo;
-              cout.width(14); cout << Total_Sens_AoA;
-            }
-            cout << endl;
-            cout.unsetf(ios_base::floatfield);
+          
+          cout.precision(6);
+          cout.setf(ios::fixed, ios::floatfield);
+          cout.width(17); cout << log10(residual_adjflow[0]);
+          if (!config[val_iZone]->GetFrozen_Visc()) {
+            cout.width(17); cout << log10(residual_adjturbulent[0]);
           }
+          else {
+            if (compressible) {
+              if (geometry[val_iZone][FinestMesh]->GetnDim() == 2 ) { cout.width(15); cout << log10(residual_adjflow[3]); }
+              else { cout.width(15); cout << log10(residual_adjflow[4]); }
+            }
+            if (incompressible) {
+              cout.width(15); cout << log10(residual_adjflow[1]);
+            }
+          }
+          if (disc_adj) {
+            cout.precision(4);
+            cout.setf(ios::scientific, ios::floatfield);
+            cout.width(14); cout << Total_Sens_Press;
+            cout.width(14); cout << Total_Sens_AoA;
+          }else {
+            cout.precision(4);
+            cout.setf(ios::scientific, ios::floatfield);
+            cout.width(14); cout << Total_Sens_Geo;
+              cout.width(14); cout << Total_Sens_AoA;
+            }
+          cout << endl;
+          cout.unsetf(ios_base::floatfield);
           break;
           
       }
@@ -6102,8 +6101,8 @@ void COutput::SetForces_Breakdown(CGeometry ***geometry,
     Breakdown_file << "|                                                                       |" << "\n";
     //Breakdown_file << "|   Local date and time: " << dt << "                      |" << "\n";
     Breakdown_file <<"-------------------------------------------------------------------------" << "\n";
-    Breakdown_file << "| SU2 Lead Dev.: Dr. Francisco Palacios, Francisco.D.Palacios@boeing.com|" << "\n";
-    Breakdown_file << "|                Dr. Thomas D. Economon, economon@stanford.edu          |" << "\n";
+    Breakdown_file << "| SU2 Original Developers: Dr. Francisco D. Palacios.                   |" << "\n";
+    Breakdown_file << "|                          Dr. Thomas D. Economon.                      |" << "\n";
     Breakdown_file <<"-------------------------------------------------------------------------" << "\n";
     Breakdown_file << "| SU2 Developers:                                                       |" << "\n";
     Breakdown_file << "| - Prof. Juan J. Alonso's group at Stanford University.                |" << "\n";
@@ -9908,18 +9907,17 @@ void COutput::SetSensitivity_Files(CGeometry **geometry, CConfig **config, unsig
 
   unsigned short iZone;
 
-  if (!config[ZONE_0]->GetLow_MemoryOutput()){
-    CSolver **solver = new CSolver*[val_nZone];
+  CSolver **solver = new CSolver*[val_nZone];
 
-    for (iZone = 0; iZone < val_nZone; iZone++) {
+  for (iZone = 0; iZone < val_nZone; iZone++) {
 
 
-      nPoint = geometry[iZone]->GetnPoint();
-      nDim   = geometry[iZone]->GetnDim();
-      nMarker = config[iZone]->GetnMarker_All();
-      nVar = nDim + 1;
+    nPoint = geometry[iZone]->GetnPoint();
+    nDim   = geometry[iZone]->GetnDim();
+    nMarker = config[iZone]->GetnMarker_All();
+    nVar = nDim + 1;
 
-      /*--- We create a baseline solver to easily merge the sensitivity information ---*/
+    /*--- We create a baseline solver to easily merge the sensitivity information ---*/
 
     vector<string> fieldnames;
     fieldnames.push_back("\"Point\"");
@@ -9935,62 +9933,62 @@ void COutput::SetSensitivity_Files(CGeometry **geometry, CConfig **config, unsig
     }
     fieldnames.push_back("\"Sensitivity\"");
 
-      solver[iZone] = new CBaselineSolver(geometry[iZone], config[iZone], nVar+nDim, fieldnames);
+    solver[iZone] = new CBaselineSolver(geometry[iZone], config[iZone], nVar+nDim, fieldnames);
 
-      for (iPoint = 0; iPoint < nPoint; iPoint++) {
-        for (iDim = 0; iDim < nDim; iDim++) {
-          solver[iZone]->node[iPoint]->SetSolution(iDim, geometry[iZone]->node[iPoint]->GetCoord(iDim));
-        }
-        for (iVar = 0; iVar < nDim; iVar++) {
-          solver[iZone]->node[iPoint]->SetSolution(iVar+nDim, geometry[iZone]->GetSensitivity(iPoint, iVar));
-        }
+    for (iPoint = 0; iPoint < nPoint; iPoint++) {
+      for (iDim = 0; iDim < nDim; iDim++) {
+        solver[iZone]->node[iPoint]->SetSolution(iDim, geometry[iZone]->node[iPoint]->GetCoord(iDim));
       }
-
-      /*--- Compute the sensitivity in normal direction ---*/
-
-      for (iMarker = 0; iMarker < nMarker; iMarker++) {
-
-        if((config[iZone]->GetMarker_All_KindBC(iMarker) == HEAT_FLUX ) ||
-           (config[iZone]->GetMarker_All_KindBC(iMarker) == EULER_WALL ) ||
-           (config[iZone]->GetMarker_All_KindBC(iMarker) == ISOTHERMAL )) {
-
-          nVertex = geometry[iZone]->GetnVertex(iMarker);
-
-          for (iVertex = 0; iVertex < nVertex; iVertex++) {
-            iPoint = geometry[iZone]->vertex[iMarker][iVertex]->GetNode();
-            Normal = geometry[iZone]->vertex[iMarker][iVertex]->GetNormal();
-            Prod = 0.0;
-            Area = 0.0;
-            for (iDim = 0; iDim < nDim; iDim++) {
-
-              /*--- Retrieve the gradient calculated with discrete adjoint method ---*/
-
-              SensDim = geometry[iZone]->GetSensitivity(iPoint, iDim);
-
-              /*--- Calculate scalar product for projection onto the normal vector ---*/
-
-              Prod += Normal[iDim]*SensDim;
-
-              Area += Normal[iDim]*Normal[iDim];
-            }
-
-            Area = sqrt(Area);
-
-            /*--- Projection of the gradient onto the normal vector of the surface ---*/
-
-            Sens = Prod/Area;
-
-            solver[iZone]->node[iPoint]->SetSolution(2*nDim, Sens);
-
-          }
-        }
+      for (iVar = 0; iVar < nDim; iVar++) {
+        solver[iZone]->node[iPoint]->SetSolution(iVar+nDim, geometry[iZone]->GetSensitivity(iPoint, iVar));
       }
     }
 
+    /*--- Compute the sensitivity in normal direction ---*/
+
+    for (iMarker = 0; iMarker < nMarker; iMarker++) {
+
+      if((config[iZone]->GetMarker_All_KindBC(iMarker) == HEAT_FLUX ) ||
+         (config[iZone]->GetMarker_All_KindBC(iMarker) == EULER_WALL ) ||
+         (config[iZone]->GetMarker_All_KindBC(iMarker) == ISOTHERMAL )) {
+
+        nVertex = geometry[iZone]->GetnVertex(iMarker);
+
+        for (iVertex = 0; iVertex < nVertex; iVertex++) {
+          iPoint = geometry[iZone]->vertex[iMarker][iVertex]->GetNode();
+          Normal = geometry[iZone]->vertex[iMarker][iVertex]->GetNormal();
+          Prod = 0.0;
+          Area = 0.0;
+          for (iDim = 0; iDim < nDim; iDim++) {
+
+            /*--- Retrieve the gradient calculated with discrete adjoint method ---*/
+
+            SensDim = geometry[iZone]->GetSensitivity(iPoint, iDim);
+
+            /*--- Calculate scalar product for projection onto the normal vector ---*/
+
+            Prod += Normal[iDim]*SensDim;
+
+            Area += Normal[iDim]*Normal[iDim];
+          }
+
+          Area = sqrt(Area);
+
+          /*--- Projection of the gradient onto the normal vector of the surface ---*/
+
+          Sens = Prod/Area;
+
+          solver[iZone]->node[iPoint]->SetSolution(2*nDim, Sens);
+
+        }
+      }
+    }
+  }
+
   /*--- Merge the information and write the output files ---*/
+
   SetBaselineResult_Files(solver, geometry, config, 0, val_nZone);
 
-  }
 }
 
 
@@ -10344,12 +10342,14 @@ void COutput::LoadLocalData_Flow(CConfig *config, CGeometry *geometry, CSolver *
   su2double Gas_Constant, Mach2Vel, Mach_Motion, RefDensity, RefPressure = 0.0, factor = 0.0;
   su2double *Aux_Frict_x = NULL, *Aux_Frict_y = NULL, *Aux_Frict_z = NULL, *Aux_Heat = NULL, *Aux_yPlus = NULL;
   su2double *Grid_Vel = NULL;
-  
+  su2double Avg_Iter = (config->GetExtIter() - config->GetUnst_RestartIter()) + 2;
+
   bool compressible   = (config->GetKind_Regime() == COMPRESSIBLE);
   bool incompressible = (config->GetKind_Regime() == INCOMPRESSIBLE);
   bool grid_movement  = (config->GetGrid_Movement());
   bool Wrt_Halo       = config->GetWrt_Halo(), isPeriodic;
-  
+  bool calculate_average = (config->GetCalculate_Average());
+
   int *Local_Halo = NULL;
   
   stringstream varname;
@@ -10569,6 +10569,73 @@ void COutput::LoadLocalData_Flow(CConfig *config, CGeometry *geometry, CSolver *
     
     /*--- New variables get registered here before the end of the loop. ---*/
     
+    if (config->GetKind_HybridRANSLES()!=NO_HYBRIDRANSLES){
+      nVar_Par +=1;
+      Variable_Names.push_back("DES_LengthScale");
+      nVar_Par +=1;
+      Variable_Names.push_back("Wall_Distance");
+    }
+    
+    if (config->GetKind_RoeLowDiss() != NO_ROELOWDISS){
+      nVar_Par +=1;
+      Variable_Names.push_back("Roe_Dissipation");      
+    }
+    
+    if (calculate_average) {
+      nVar_Par +=1;
+      Variable_Names.push_back("Mean_Density");
+      nVar_Par +=1;
+      Variable_Names.push_back("Mean_U");
+      nVar_Par +=1;
+      Variable_Names.push_back("Mean_V");
+      if (geometry->GetnDim()==3){
+        nVar_Par +=1;
+        Variable_Names.push_back("Mean_W");
+      }
+      nVar_Par +=1;
+      Variable_Names.push_back("Mean_E");
+      nVar_Par +=1;
+      Variable_Names.push_back("Mean_P");
+      
+      if (config->GetKind_Solver() == RANS){
+        nVar_Par +=1;
+        Variable_Names.push_back("Mean_Cfx");
+        nVar_Par +=1;
+        Variable_Names.push_back("Mean_Cfy");
+        if (geometry->GetnDim()==3){
+          nVar_Par +=1;
+          Variable_Names.push_back("Mean_Cfz");
+        }
+      }
+      
+      if (geometry->GetnDim()==2){
+        nVar_Par +=1;
+        Variable_Names.push_back("U<sup>p</sup>U<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("V<sup>p</sup>V<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("U<sup>p</sup>V<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("P<sup>p</sup>P<sup>p</sup>");
+      }
+      else{
+        nVar_Par +=1;
+        Variable_Names.push_back("U<sup>p</sup>U<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("V<sup>p</sup>V<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("W<sup>p</sup>W<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("U<sup>p</sup>V<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("U<sup>p</sup>W<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("V<sup>p</sup>W<sup>p</sup>");
+        nVar_Par +=1;
+        Variable_Names.push_back("P<sup>p</sup>P<sup>p</sup>");
+      }
+    }
+    
   }
   
   /*--- Auxiliary vectors for variables defined on surfaces only. ---*/
@@ -10787,13 +10854,55 @@ void COutput::LoadLocalData_Flow(CConfig *config, CGeometry *geometry, CSolver *
         /*--- New variables can be loaded to the Local_Data structure here,
          assuming they were registered above correctly. ---*/
         
+        if (config->GetKind_HybridRANSLES()!=NO_HYBRIDRANSLES){
+          Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetDES_LengthScale(); iVar++; 
+          Local_Data[jPoint][iVar] = geometry->node[iPoint]->GetWall_Distance(); iVar++;
+        }
+        
+        if (config->GetKind_RoeLowDiss() != NO_ROELOWDISS){
+          Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetRoe_Dissipation(); iVar++; 
+        }
+
+        if (calculate_average){
+          for (jVar = 0; jVar < nVar_First; jVar++) {
+            Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_Avg(jVar) / Avg_Iter;
+            iVar++;
+          }
+          Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_Avg(nVar_First) / Avg_Iter;
+          iVar++;
+          
+          if (config->GetKind_Solver() == RANS){
+            Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_Avg(nVar_First+1) / Avg_Iter;
+            iVar++;
+            Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_Avg(nVar_First+2) / Avg_Iter;
+            iVar++;
+            if (geometry->GetnDim() == 3){
+              Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_Avg(nVar_First+3) / Avg_Iter;
+              iVar++;
+            }
+          }
+          
+          
+          if (geometry->GetnDim() == 2){
+            for (jVar = 0; jVar < geometry->GetnDim()+2; jVar++) {
+              Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_RMS(jVar) / Avg_Iter;
+              iVar++;
+            }
+          }
+          else{
+            for (jVar = 0; jVar < geometry->GetnDim()+4; jVar++) {
+              Local_Data[jPoint][iVar] = solver[FLOW_SOL]->node[iPoint]->GetSolution_RMS(jVar) / Avg_Iter;
+              iVar++;
+            }
+          }
+        }
+          
+        /*--- Increment the point counter, as there may have been halos we
+         skipped over during the data loading. ---*/
+        
+        jPoint++;
+        
       }
-
-      /*--- Increment the point counter, as there may have been halos we
-       skipped over during the data loading. ---*/
-
-      jPoint++;
-
     }
   }
   
@@ -10898,20 +11007,6 @@ void COutput::LoadLocalData_AdjFlow(CConfig *config, CGeometry *geometry, CSolve
     }
   }
 
-
-  /*--- For the discrete adjoint, we have the full field of sensitivity
-   in each coordinate direction. ---*/
-
-  if ((Kind_Solver == DISC_ADJ_EULER)         ||
-      (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
-      (Kind_Solver == DISC_ADJ_RANS)) {
-    nVar_Par += nDim;
-    Variable_Names.push_back("Sensitivity_x");
-    Variable_Names.push_back("Sensitivity_y");
-    if (geometry->GetnDim()== 3)
-      Variable_Names.push_back("Sensitivity_z");
-  }
-
   /*--- If requested, register the limiter and residuals for all of the
    equations in the current flow problem. ---*/
   
@@ -10999,6 +11094,19 @@ void COutput::LoadLocalData_AdjFlow(CConfig *config, CGeometry *geometry, CSolve
       } else {
         Variable_Names.push_back("Limiter_Adjoint_Density");
       }
+    }
+    
+    /*--- For the discrete adjoint, we have the full field of sensitivity
+     in each coordinate direction. ---*/
+    
+    if ((Kind_Solver == DISC_ADJ_EULER)         ||
+        (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
+        (Kind_Solver == DISC_ADJ_RANS)) {
+      nVar_Par += nDim;
+      Variable_Names.push_back("Sensitivity_x");
+      Variable_Names.push_back("Sensitivity_y");
+      if (geometry->GetnDim()== 3)
+        Variable_Names.push_back("Sensitivity_z");
     }
     
     /*--- New variables get registered here before the end of the loop. ---*/
@@ -11101,6 +11209,25 @@ void COutput::LoadLocalData_AdjFlow(CConfig *config, CGeometry *geometry, CSolve
         iVar++;
       }
       
+      if (!config->GetLow_MemoryOutput()) {
+        if (config->GetWrt_Limiters()) {
+          for (jVar = 0; jVar < nVar_First; jVar++) {
+            Local_Data[jPoint][iVar] = solver[FirstIndex]->node[iPoint]->GetLimiter(jVar);
+            iVar++;
+          }
+        }
+        if (config->GetWrt_Residuals()) {
+          for (jVar = 0; jVar < nVar_First; jVar++) {
+            if (!config->GetDiscrete_Adjoint()) {
+              Local_Data[jPoint][iVar] = solver[FirstIndex]->LinSysRes.GetBlock(iPoint, jVar);
+            } else {
+              Local_Data[jPoint][iVar] = solver[FirstIndex]->node[iPoint]->GetSolution(jVar) -
+              solver[FirstIndex]->node[iPoint]->GetSolution_Old(jVar);
+            }
+            iVar++;
+          }
+        }
+      }
       
       /*--- If this is Adj. RANS, i.e., the second solver container is not empty,
        then load data for the conservative turbulence variables and the
@@ -11111,60 +11238,28 @@ void COutput::LoadLocalData_AdjFlow(CConfig *config, CGeometry *geometry, CSolve
           Local_Data[jPoint][iVar] = solver[SecondIndex]->node[iPoint]->GetSolution(jVar);
           iVar++;
         }
-      }
-
-      /*--- Load data for the discrete sensitivities. ---*/
-
-      if ((Kind_Solver == DISC_ADJ_EULER)         ||
-          (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
-          (Kind_Solver == DISC_ADJ_RANS)) {
-        Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(0); iVar++;
-        Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(1); iVar++;
-        if (geometry->GetnDim()== 3) {
-          Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(2);
-          iVar++;
-        }
-      }
-      
-      if (!config->GetLow_MemoryOutput()) {
-
+        if (!config->GetLow_MemoryOutput()) {
           if (config->GetWrt_Limiters()) {
-            for (jVar = 0; jVar < nVar_First; jVar++) {
-              Local_Data[jPoint][iVar] = solver[FirstIndex]->node[iPoint]->GetLimiter(jVar);
+            for (jVar = 0; jVar < nVar_Second; jVar++) {
+              Local_Data[jPoint][iVar] = solver[SecondIndex]->node[iPoint]->GetLimiter(jVar);
               iVar++;
             }
           }
           if (config->GetWrt_Residuals()) {
-            for (jVar = 0; jVar < nVar_First; jVar++) {
+            for (jVar = 0; jVar < nVar_Second; jVar++) {
               if (!config->GetDiscrete_Adjoint()) {
-                Local_Data[jPoint][iVar] = solver[FirstIndex]->LinSysRes.GetBlock(iPoint, jVar);
+                Local_Data[jPoint][iVar] = solver[SecondIndex]->LinSysRes.GetBlock(iPoint, jVar);
               } else {
-                Local_Data[jPoint][iVar] = solver[FirstIndex]->node[iPoint]->GetSolution(jVar) -
-                solver[FirstIndex]->node[iPoint]->GetSolution_Old(jVar);
+                Local_Data[jPoint][iVar] = solver[SecondIndex]->node[iPoint]->GetSolution(jVar) -
+                solver[SecondIndex]->node[iPoint]->GetSolution_Old(jVar);
               }
               iVar++;
             }
           }
-
-          if (SecondIndex != NONE) {
-            if (config->GetWrt_Limiters()) {
-              for (jVar = 0; jVar < nVar_Second; jVar++) {
-                Local_Data[jPoint][iVar] = solver[SecondIndex]->node[iPoint]->GetLimiter(jVar);
-                iVar++;
-              }
-            }
-            if (config->GetWrt_Residuals()) {
-              for (jVar = 0; jVar < nVar_Second; jVar++) {
-                if (!config->GetDiscrete_Adjoint()) {
-                  Local_Data[jPoint][iVar] = solver[SecondIndex]->LinSysRes.GetBlock(iPoint, jVar);
-                } else {
-                  Local_Data[jPoint][iVar] = solver[SecondIndex]->node[iPoint]->GetSolution(jVar) -
-                                             solver[SecondIndex]->node[iPoint]->GetSolution_Old(jVar);
-                }
-                iVar++;
-              }
-            }
-          }
+        }
+      }
+      
+      if (!config->GetLow_MemoryOutput()) {
         
         /*--- Load buffers with the three grid velocity components. ---*/
         
@@ -11194,15 +11289,28 @@ void COutput::LoadLocalData_AdjFlow(CConfig *config, CGeometry *geometry, CSolve
           }
         }
         
+        /*--- Load data for the discrete sensitivities. ---*/
+        
+        if ((Kind_Solver == DISC_ADJ_EULER)         ||
+            (Kind_Solver == DISC_ADJ_NAVIER_STOKES) ||
+            (Kind_Solver == DISC_ADJ_RANS)) {
+          Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(0); iVar++;
+          Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(1); iVar++;
+          if (geometry->GetnDim()== 3) {
+            Local_Data[jPoint][iVar] = solver[ADJFLOW_SOL]->node[iPoint]->GetSensitivity(2);
+            iVar++;
+          }
+        }
+        
         /*--- New variables can be loaded to the Local_Data structure here,
          assuming they were registered above correctly. ---*/
+       
+        /*--- Increment the point counter, as there may have been halos we
+         skipped over during the data loading. ---*/
+        
+        jPoint++;
         
       }
-
-      /*--- Increment the point counter, as there may have been halos we
-       skipped over during the data loading. ---*/
-
-      jPoint++;
     }
   }
   
@@ -11482,12 +11590,12 @@ void COutput::LoadLocalData_Elasticity(CConfig *config, CGeometry *geometry, CSo
         /*--- New variables can be loaded to the Local_Data structure here,
          assuming they were registered above correctly. ---*/
         
+        /*--- Increment the point counter, as there may have been halos we
+         skipped over during the data loading. ---*/
+        
+        jPoint++;
+        
       }
-
-      /*--- Increment the point counter, as there may have been halos we
-       skipped over during the data loading. ---*/
-
-      jPoint++;
     }
   }
   

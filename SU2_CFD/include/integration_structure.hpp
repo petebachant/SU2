@@ -6,8 +6,8 @@
  * \author F. Palacios, T. Economon
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -214,13 +214,14 @@ public:
    */
   bool GetConvergence_FullMG(void);
   
-  /*! 
-   * \brief Save the solution, and volume at different time steps. 
+  /*!
+   * \brief Save the solution, and volume at different time steps.
    * \param[in] geometry - Geometrical definition of the problem.
    * \param[in] solution - Flow solution.
    * \param[in] config - Definition of the particular problem.
+   * \param[in] SolContainer_Position - Current position in the solver container.
    */
-  void SetDualTime_Solver(CGeometry *geometry, CSolver *solver, CConfig *config, unsigned short iMesh);
+  void SetDualTime_Solver(CGeometry *geometry, CSolver *solver, CConfig *config, unsigned short iMesh, unsigned short SolContainer_Position);
   
   /*! 
    * \brief Save the structural solution at different time steps.

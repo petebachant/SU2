@@ -6,8 +6,8 @@
  * \author F. Palacios, T. Economon
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -252,8 +252,52 @@ public:
 
   /*!
    * \brief A virtual member.
+   * \param[in] val_var - Index of the variable.
+   * \return Pointer to the old solution vector.
+   */
+  virtual su2double GetSolution_Avg(unsigned short val_var);
+  
+  /*!
+   * \brief A virtual member.
+   * \param[in] val_var - Index of the variable.
+   * \return Pointer to the old solution vector.
+   */
+  virtual su2double GetSolution_RMS(unsigned short val_var);
+  
+  /*!
+   * \brief A virtual member.
+   */
+  virtual su2double GetRoe_Dissipation(void);
+  
+  /*!
+   * \brief A virtual member.
+   */
+  virtual void SetRoe_Dissipation(su2double val_roe_dissipation);
+  
+  /*!
+   * \brief A virtual member.
+   */
+  virtual su2double GetDES_LengthScale(void);
+  
+  /*!
+   * \brief A virtual member.
+   */
+  virtual void SetDES_LengthScale(su2double val_des_lengthscale);
+
+  /*!
+   * \brief A virtual member.
    */
   virtual void SetSolution_New(void);
+
+  /*!
+   * \brief A virtual member.
+   */
+  virtual void SetSolution_Avg(unsigned short val_var, su2double val_solution);
+  
+  /*!
+   * \brief A virtual member.
+   */
+  virtual void SetSolution_RMS(unsigned short val_var, su2double val_solution);
 
   /*!
    * \brief A virtual member.
@@ -262,6 +306,20 @@ public:
    */
   virtual void AddSolution_New(unsigned short val_var, su2double val_solution);
 
+  /*!
+   * \brief A virtual member.
+   * \param[in] val_var - Number of the variable.
+   * \param[in] val_solution - Value that we want to add to the solution.
+   */
+  virtual void AddSolution_Avg(unsigned short val_var, su2double val_solution);
+  
+  /*!
+   * \brief A virtual member.
+   * \param[in] val_var - Number of the variable.
+   * \param[in] val_solution - Value that we want to add to the solution.
+   */
+  virtual void AddSolution_RMS(unsigned short val_var, su2double val_solution);
+  
   /*!
    * \brief Add a value to the solution, clipping the values.
    * \param[in] val_var - Index of the variable.
@@ -2679,6 +2737,16 @@ protected:
   /*--- New solution container for Classical RK4 ---*/
 
   su2double *Solution_New;
+    
+  /*--- New solution container for Average ---*/
+  
+  su2double *Solution_Avg;
+
+  /*--- New solution container for RMS ---*/
+  
+  su2double *Solution_RMS;
+  
+  su2double Roe_Dissipation;
   
 public:
   
@@ -2731,6 +2799,55 @@ public:
    * \param[in] val_solution - Value that we want to add to the solution.
    */
   void AddSolution_New(unsigned short val_var, su2double val_solution);
+
+  /*!
+   * \brief Get the solution of Calculate Averages.
+   * \param[in] val_var - Index of the variable.
+   * \return Pointer to the old solution vector.
+   */
+  su2double GetSolution_Avg(unsigned short val_var);
+  
+  /*!
+   * \brief Get the solution of Calculate Averages.
+   * \param[in] val_var - Index of the variable.
+   * \return Pointer to the old solution vector.
+   */
+  su2double GetSolution_RMS(unsigned short val_var);
+  
+    /*!
+   * \brief Get the Roe Dissipation Coefficient.
+   * \return Value of the Roe Dissipation.
+   */
+  su2double GetRoe_Dissipation(void);
+  
+  /*!
+   * \brief Set the new solution for Roe Dissipation.
+   */
+  void SetRoe_Dissipation(su2double val_roe_dissipation);
+  
+  /*!
+   * \brief Set the new solution container for Calculate Averages
+   */
+  void SetSolution_Avg(unsigned short val_var, su2double val_solution);
+
+  /*!
+   * \brief Set the new solution container for Calculate Averages
+   */
+  void SetSolution_RMS(unsigned short val_var, su2double val_solution);
+  
+  /*!
+   * \brief Add a value to the new solution container for Calculate Averages.
+   * \param[in] val_var - Number of the variable.
+   * \param[in] val_solution - Value that we want to add to the solution.
+   */
+  void AddSolution_Avg(unsigned short val_var, su2double val_solution);
+  
+  /*!
+   * \brief Add a value to the new solution container for Calculate Averages.
+   * \param[in] val_var - Number of the variable.
+   * \param[in] val_solution - Value that we want to add to the solution.
+   */
+  void AddSolution_RMS(unsigned short val_var, su2double val_solution);
 
   /*!
    * \brief Set to zero the gradient of the primitive variables.
@@ -3336,6 +3453,8 @@ private:
   su2double Viscosity_Inf;   /*!< \brief Viscosity of the fluid at the infinity. */
   su2double Vorticity[3];    /*!< \brief Vorticity of the fluid. */
   su2double StrainMag;       /*!< \brief Magnitude of rate of strain tensor. */
+  su2double DES_LengthScale; /*!< \brief DES Length Scale. */
+  
 public:
   
   /*!
@@ -3482,6 +3601,18 @@ public:
    * \brief Set all the secondary variables (partial derivatives) for compressible flows
    */
   void SetSecondaryVar(CFluidModel *FluidModel);
+  
+  /*!
+   * \brief Get the DES length scale
+   * \return Value of the DES length Scale.
+   */
+  su2double GetDES_LengthScale(void);
+  
+  /*!
+   * \brief Set the DES Length Scale.
+   */
+  void SetDES_LengthScale(su2double val_des_lengthscale);
+  
 };
 
 /*!

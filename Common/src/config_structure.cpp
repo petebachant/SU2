@@ -4,8 +4,8 @@
  * \author F. Palacios, T. Economon, B. Tracey, H. Kline
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -32,7 +32,6 @@
  */
 
 #include "../include/config_structure.hpp"
-
 
 CConfig::CConfig(char case_filename[MAX_STRING_SIZE], unsigned short val_software, unsigned short val_iZone, unsigned short val_nZone, unsigned short val_nDim, unsigned short verb_level) {
   
@@ -566,6 +565,11 @@ void CConfig::SetConfig_Options(unsigned short val_iZone, unsigned short val_nZo
   addBoolOption("READ_BINARY_RESTART", Read_Binary_Restart, true);
   /*!\brief TIMEDOMAIN3D \n DESCRIPTION: use 3D Time domain FWH formulation \n Options: NO, YES \ingroup Config */
   addBoolOption("TIMEDOMAIN3D", TimeDomain3D, false);
+
+  /*!\brief CALCULATE_AVERAGE \n DESCRIPTION: Calculate average of variables over unsteady simulations. \n Options: YES, NO \ingroup Config */
+  addBoolOption("CALCULATE_AVERAGE", Calculate_Average, false);
+
+
   /*!\brief SYSTEM_MEASUREMENTS \n DESCRIPTION: System of measurements \n OPTIONS: see \link Measurements_Map \endlink \n DEFAULT: SI \ingroup Config*/
   addEnumOption("SYSTEM_MEASUREMENTS", SystemMeasurements, Measurements_Map, SI);
 
@@ -3131,6 +3135,14 @@ void CConfig::SetPostprocessing(unsigned short val_software, unsigned short val_
     }
   }
 
+  /*--- Check for the calculation of averages. Disable if it is not
+   an unsteady calculation with a restart. ---*/
+
+  if (Calculate_Average) {
+    if (Unsteady_Simulation == NO || !Restart)
+      Calculate_Average = false;
+  }
+
   /*--- Check for 2nd order w/ limiting for JST and correct ---*/
   
   if ((Kind_ConvNumScheme_Flow == SPACE_CENTERED) && (Kind_Centered_Flow == JST) && (SpatialOrder_Flow == SECOND_ORDER_LIMITER))
@@ -3675,8 +3687,8 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
   cout << "|                                                                       |" << endl;
   //cout << "|   Local date and time: " << dt << "                      |" << endl;
   cout <<"-------------------------------------------------------------------------" << endl;
-  cout << "| SU2 Lead Dev.: Dr. Francisco Palacios, Francisco.D.Palacios@boeing.com|" << endl;
-  cout << "|                Dr. Thomas D. Economon, economon@stanford.edu          |" << endl;
+  cout << "| SU2 Original Developers: Dr. Francisco D. Palacios.                   |" << endl;
+  cout << "|                          Dr. Thomas D. Economon.                      |" << endl;
   cout <<"-------------------------------------------------------------------------" << endl;
   cout << "| SU2 Developers:                                                       |" << endl;
   cout << "| - Prof. Juan J. Alonso's group at Stanford University.                |" << endl;
@@ -3733,6 +3745,15 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
           case SA_E:   cout << "Edwards Spalart Allmaras" << endl; break;
           case SA_COMP:   cout << "Compressibility Correction Spalart Allmaras" << endl; break;
           case SA_E_COMP:   cout << "Compressibility Correction Edwards Spalart Allmaras" << endl; break;
+        }
+        if (QCR) cout << "Using Quadratic Constitutive Relation, 2000 version (QCR2000)" << endl;
+        cout << "Hybrid RANS/LES: ";
+        switch (Kind_HybridRANSLES){
+          case NO_HYBRIDRANSLES: cout <<  "No Hybrid RANS/LES" << endl; break;
+          case SA_DES:  cout << "Detached Eddy Simulation (DES97) " << endl; break;
+          case SA_DDES:  cout << "Delayed Detached Eddy Simulation (DDES) with Standard SGS" << endl; break;
+          case SA_ZDES:  cout << "Delayed Detached Eddy Simulation (DDES) with Vorticity-based SGS" << endl; break;
+          case SA_EDDES:  cout << "Delayed Detached Eddy Simulation (DDES) with Shear-layer Adapted SGS" << endl; break;
         }
         break;
       case POISSON_EQUATION: cout << "Poisson equation." << endl; break;
@@ -4185,9 +4206,9 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
 				if (Kind_Upwind_Flow == HLLC)	cout << "HLLC solver for the flow inviscid terms."<< endl;
 				if (Kind_Upwind_Flow == SW)	cout << "Steger-Warming solver for the flow inviscid terms."<< endl;
 				if (Kind_Upwind_Flow == MSW)	cout << "Modified Steger-Warming solver for the flow inviscid terms."<< endl;
-              if (Kind_Upwind_Flow == CUSP)	cout << "CUSP solver for the flow inviscid terms."<< endl;
-              if (Kind_Upwind_Flow == L2ROE) cout << "L2ROE Low Mach ROE solver for the flow inviscid terms."<< endl;
-              if (Kind_Upwind_Flow == LMROE) cout << "Rieper Low Mach ROE solver for the flow inviscid terms."<< endl;
+        if (Kind_Upwind_Flow == CUSP)	cout << "CUSP solver for the flow inviscid terms."<< endl;
+        if (Kind_Upwind_Flow == L2ROE) cout << "L2ROE Low Mach ROE solver for the flow inviscid terms."<< endl;
+        if (Kind_Upwind_Flow == LMROE) cout << "Rieper Low Mach ROE solver for the flow inviscid terms."<< endl;
         switch (SpatialOrder_Flow) {
           case FIRST_ORDER: cout << "First order integration." << endl; break;
           case SECOND_ORDER: cout << "Second order integration." << endl; break;
@@ -4206,6 +4227,13 @@ void CConfig::SetOutput(unsigned short val_software, unsigned short val_izone) {
                     
             }
             break;
+        }
+        switch (Kind_RoeLowDiss) {
+          case NO_ROELOWDISS: cout << "Standard Roe without low-dissipation function."<< endl; break;
+          case NTS: cout << "Roe with NTS low-dissipation function."<< endl; break;
+          case FD: cout << "Roe with DDES's FD low-dissipation function."<< endl; break;
+          case NTS_DUCROS: cout << "Roe with NTS low-dissipation function + Ducros shock sensor."<< endl; break;
+          case FD_DUCROS: cout << "Roe with DDES's FD low-dissipation function + Ducros shock sensor."<< endl; break;
         }
 			}
 

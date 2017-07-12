@@ -4,8 +4,8 @@
  * \author F. Palacios, T. Economon
  * \version 5.0.0 "Raven"
  *
- * SU2 Lead Developers: Dr. Francisco Palacios (Francisco.D.Palacios@boeing.com).
- *                      Dr. Thomas D. Economon (economon@stanford.edu).
+ * SU2 Original Developers: Dr. Francisco D. Palacios.
+ *                          Dr. Thomas D. Economon.
  *
  * SU2 Developers: Prof. Juan J. Alonso's group at Stanford University.
  *                 Prof. Piero Colonna's group at Delft University of Technology.
@@ -974,6 +974,8 @@ inline bool CConfig::GetTimeDomain3D(void) { return TimeDomain3D; }
 inline bool CConfig::GetWrt_Binary_Restart(void) {	return Wrt_Binary_Restart; }
 
 inline bool CConfig::GetRead_Binary_Restart(void) {	return Read_Binary_Restart; }
+
+inline bool CConfig::GetCalculate_Average(void) {	return Calculate_Average; }
 
 inline bool CConfig::GetRestart_Flow(void) { return Restart_Flow; }
 
