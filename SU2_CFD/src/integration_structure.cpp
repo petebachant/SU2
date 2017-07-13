@@ -456,7 +456,7 @@ void CIntegration::Convergence_Monitoring(CGeometry *geometry, CConfig *config, 
     
     bool Already_Converged = Convergence;
     
-    /*--- Cauchi based convergence criteria ---*/
+    /*--- Cauchy based convergence criteria ---*/
     
     if (config->GetConvCriteria() == CAUCHY) {
       

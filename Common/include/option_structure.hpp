@@ -948,7 +948,7 @@ enum ENGINE_INFLOW_TYPE {
   FAN_FACE_MDOT = 2,           /*!< \brief User specifies Static pressure. */
   FAN_FACE_PRESSURE = 3        /*!< \brief User specifies Static pressure. */
 };
-static const map<string, ENGINE_INFLOW_TYPE> Engine_Inflow_Map = CCreateMap<string, ENGINE_INFLOW_TYPE>
+static const map<string, ENGINE_INFLOW_TYPE> Engine_EngineInflow_Map = CCreateMap<string, ENGINE_INFLOW_TYPE>
 ("FAN_FACE_MACH", FAN_FACE_MACH)
 ("FAN_FACE_MDOT", FAN_FACE_MDOT)
 ("FAN_FACE_PRESSURE", FAN_FACE_PRESSURE);
@@ -957,15 +957,17 @@ static const map<string, ENGINE_INFLOW_TYPE> Engine_Inflow_Map = CCreateMap<stri
  * \brief types actuator disk boundary treatments
  */
 enum ACTDISK_TYPE {
-  VARIABLES_JUMP = 1,		/*!< \brief User specifies the variables jump. */
-  BC_THRUST = 2,     /*!< \brief User specifies the BC thrust. */
-  NET_THRUST = 3,     /*!< \brief User specifies the Net thrust. */
-  DRAG_MINUS_THRUST = 4,     /*!< \brief ACDC computes the right thrust. */
-  MASSFLOW = 5,     /*!< \brief ACDC computes the right thrust. */
-  POWER = 6     /*!< \brief User specifies the Net thrust. */
+  PRESS_TEMP_INC = 1,   /*!< \brief User specifies pressure and temperature increment. */
+  PRESS_TEMP_RATIO = 2,		/*!< \brief User specifies pressure and temperature ratio. */
+  BC_THRUST = 3,     /*!< \brief User specifies the BC thrust. */
+  NET_THRUST = 4,     /*!< \brief User specifies the Net thrust. */
+  DRAG_MINUS_THRUST = 5,     /*!< \brief ACDC computes the right thrust. */
+  MASSFLOW = 6,     /*!< \brief ACDC computes the right thrust. */
+  POWER = 7     /*!< \brief User specifies the Net thrust. */
 };
 static const map<string, ACTDISK_TYPE> ActDisk_Map = CCreateMap<string, ACTDISK_TYPE>
-("VARIABLES_JUMP", VARIABLES_JUMP)
+("PRESS_TEMP_INC", PRESS_TEMP_INC)
+("PRESS_TEMP_RATIO", PRESS_TEMP_RATIO)
 ("BC_THRUST", BC_THRUST)
 ("NET_THRUST", NET_THRUST)
 ("DRAG_MINUS_THRUST", DRAG_MINUS_THRUST)
@@ -1020,9 +1022,12 @@ enum ENUM_OBJECTIVE {
   AVG_OUTLET_PRESSURE = 29,      /*!< \brief Static Pressure objective function definition. */
   MASS_FLOW_RATE = 30,           /*!< \brief Mass Flow Rate objective function definition. */
   AERO_DRAG_COEFFICIENT = 35, 	  /*!< \brief Aero Drag objective function definition. */
-  RADIAL_DISTORTION = 36, 	      /*!< \brief Radial Distortion objective function definition. */
-  CIRCUMFERENTIAL_DISTORTION = 37,  /*!< \brief Circumferential Distortion objective function definition. */
-  NOISE = 38
+  SOLID_DRAG_COEFFICIENT = 36, 	  /*!< \brief Drag of solid surfaces objective function definition. */
+  RADIAL_DISTORTION = 37, 	      /*!< \brief Radial Distortion objective function definition. */
+  CIRCUMFERENTIAL_DISTORTION = 38,  /*!< \brief Circumferential Distortion objective function definition. */
+  ELLIPTIC_SPANLOAD = 39,           /*!< \brief Elliptic spanload objective function definition. */
+  MAX_SECTIONAL_CL = 40,            /*!< \brief Maximum sectional CL objective function definition. */
+  NOISE = 41   
 };
 
 static const map<string, ENUM_OBJECTIVE> Objective_Map = CCreateMap<string, ENUM_OBJECTIVE>
@@ -1056,9 +1061,12 @@ static const map<string, ENUM_OBJECTIVE> Objective_Map = CCreateMap<string, ENUM
 ("AVG_OUTLET_PRESSURE", AVG_OUTLET_PRESSURE)
 ("MASS_FLOW_RATE", MASS_FLOW_RATE)
 ("AERO_DRAG", AERO_DRAG_COEFFICIENT)
+("SOLID_DRAG", SOLID_DRAG_COEFFICIENT)
 ("RADIAL_DISTORTION", RADIAL_DISTORTION)
 ("CIRCUMFERENTIAL_DISTORTION", CIRCUMFERENTIAL_DISTORTION)
-("NOISE", NOISE);
+("NOISE", NOISE)
+("ELLIPTIC_SPANLOAD", ELLIPTIC_SPANLOAD)
+("MAX_SECTIONAL_CL", MAX_SECTIONAL_CL);
 
 /*!
  * \brief types of residual criteria equations
@@ -1346,12 +1354,14 @@ static const map<string, ENUM_FFD_CONTINUITY> Continuity_Map = CCreateMap<string
 enum ENUM_FFD_COORD_SYSTEM {
   CARTESIAN = 0,
   CYLINDRICAL = 1,
-  SPHERICAL = 2
+  SPHERICAL = 2,
+  POLAR = 3
 };
 static const map<string, ENUM_FFD_COORD_SYSTEM> CoordSystem_Map = CCreateMap<string, ENUM_FFD_COORD_SYSTEM>
 ("CARTESIAN", CARTESIAN)
 ("CYLINDRICAL", CYLINDRICAL)
-("SPHERICAL", SPHERICAL);
+("SPHERICAL", SPHERICAL)
+("POLAR", POLAR);
 
 /*!
  * \brief types of sensitivity smoothing
@@ -1401,15 +1411,15 @@ static const map<string, ENUM_GEO_ANALYTIC> Geo_Analytic_Map = CCreateMap<string
 /*!
  * \brief types of axis orientation
  */
-enum ENUM_AXIS_ORIENTATION {
-  X_AXIS = 0,   /*!< \brief X axis orientation. */
-  Y_AXIS = 1, 	/*!< \brief Y axis orientation. */
-  Z_AXIS = 2    /*!< \brief Z axis orientation. */
+enum ENUM_GEO_DESCRIPTION {
+	TWOD_AIRFOIL = 0,   /*!< \brief Airfoil analysis. */
+  WING = 1, 	/*!< \brief Wing analysis. */
+  FUSELAGE = 2    /*!< \brief Fuselage analysis. */
 };
-static const map<string, ENUM_AXIS_ORIENTATION> Axis_Stations_Map = CCreateMap<string, ENUM_AXIS_ORIENTATION>
-("X_AXIS", X_AXIS)
-("Y_AXIS", Y_AXIS)
-("Z_AXIS", Z_AXIS);
+static const map<string, ENUM_GEO_DESCRIPTION> Geo_Description_Map = CCreateMap<string, ENUM_GEO_DESCRIPTION>
+("AIRFOIL", TWOD_AIRFOIL)
+("WING", WING)
+("FUSELAGE", FUSELAGE);
 
 /*!
  * \brief types of schemes for unsteady computations
@@ -1448,12 +1458,14 @@ static const map<string, ENUM_CONVERGE_CRIT> Converge_Crit_Map = CCreateMap<stri
 enum ENUM_DEFORM_STIFFNESS {
   CONSTANT_STIFFNESS = 0,               /*!< \brief Impose a constant stiffness for each element (steel). */
   INVERSE_VOLUME = 1,			/*!< \brief Impose a stiffness for each element that is inversely proportional to cell volume. */
-  WALL_DISTANCE = 2			/*!< \brief Impose a stiffness for each element that is proportional to the distance from the deforming surface. */
+  DEF_WALL_DISTANCE = 2,			/*!< \brief Impose a stiffness for each element that is proportional to the distance from the deforming surface. */
+  SOLID_WALL_DISTANCE2 = 3			/*!< \brief Impose a stiffness for each element that is proportional to the distance from the solid surface. */
 };
 static const map<string, ENUM_DEFORM_STIFFNESS> Deform_Stiffness_Map = CCreateMap<string, ENUM_DEFORM_STIFFNESS>
 ("CONSTANT_STIFFNESS", CONSTANT_STIFFNESS)
 ("INVERSE_VOLUME", INVERSE_VOLUME)
-("WALL_DISTANCE", WALL_DISTANCE);
+("DEF_WALL_DISTANCE", DEF_WALL_DISTANCE)
+("WALL_DISTANCE", SOLID_WALL_DISTANCE2);
 
 /*!
  * \brief The direct differentation variables.
@@ -2981,20 +2993,16 @@ public:
 //};
 
 
-
-
-
-
-//Inlet condition where the input direction is assumed
 class COptionExhaust : public COptionBase {
   string name; // identifier for the option
   unsigned short & size;
   string * & marker;
+  unsigned short * & engineid;
   su2double * & ttotal;
   su2double * & ptotal;
 
 public:
-  COptionExhaust(string option_field_name, unsigned short & nMarker_Exhaust, string* & Marker_Exhaust, su2double* & Ttotal, su2double* & Ptotal) : size(nMarker_Exhaust), marker(Marker_Exhaust), ttotal(Ttotal), ptotal(Ptotal) {
+  COptionExhaust(string option_field_name, unsigned short & nMarker_Exhaust, string* & Marker_Exhaust, unsigned short* & EngineID, su2double* & Ttotal, su2double* & Ptotal) : size(nMarker_Exhaust), marker(Marker_Exhaust), engineid(EngineID), ttotal(Ttotal), ptotal(Ptotal) {
     this->name = option_field_name;
   }
 
@@ -3006,35 +3014,41 @@ public:
     if ((totalVals == 1) && (option_value[0].compare("NONE") == 0)) {
       this->size = 0;
       this->marker = NULL;
+      this->engineid = NULL;
       this->ttotal = NULL;
       this->ptotal = NULL;
       return "";
     }
 
-    if (totalVals % 3 != 0) {
+    if (totalVals % 4 != 0) {
       string newstring;
       newstring.append(this->name);
-      newstring.append(": must have a number of entries divisible by 3");
+      newstring.append(": must have a number of entries divisible by 4");
       this->size = 0;
       this->marker = NULL;
+      this->engineid = NULL;
       this->ttotal = NULL;
       this->ptotal = NULL;
       return newstring;
     }
 
-    unsigned short nVals = totalVals / 3;
+    unsigned short nVals = totalVals / 4;
     this->size = nVals;
     this->marker = new string[nVals];
+    this->engineid = new unsigned short[nVals];
     this->ttotal = new su2double[nVals];
     this->ptotal = new su2double[nVals];
 
     for (unsigned long i = 0; i < nVals; i++) {
-      this->marker[i].assign(option_value[3*i]);
-      istringstream ss_1st(option_value[3*i + 1]);
-      if (!(ss_1st >> this->ttotal[i]))
+      this->marker[i].assign(option_value[4*i]);
+      istringstream ss_1st(option_value[4*i + 1]);
+      if (!(ss_1st >> this->engineid[i]))
         return badValue(option_value, "exhaust fixed", this->name);
-      istringstream ss_2nd(option_value[3*i + 2]);
-      if (!(ss_2nd >> this->ptotal[i]))
+      istringstream ss_2nd(option_value[4*i + 2]);
+      if (!(ss_2nd >> this->ttotal[i]))
+        return badValue(option_value, "exhaust fixed", this->name);
+      istringstream ss_3rd(option_value[4*i + 3]);
+      if (!(ss_3rd >> this->ptotal[i]))
         return badValue(option_value, "exhaust fixed", this->name);
     }
     
@@ -3043,8 +3057,73 @@ public:
 
   void SetDefault() {
     this->marker = NULL;
+    this->engineid = NULL;
     this->ttotal = NULL;
     this->ptotal = NULL;
+    this->size = 0; // There is no default value for list
+  }
+  
+};
+
+class COptionInflow : public COptionBase {
+  string name; // identifier for the option
+  unsigned short & size;
+  string * & marker;
+  unsigned short * & engineid;
+  su2double * & massflow;
+  
+public:
+  COptionInflow(string option_field_name, unsigned short & nMarker_Inflow, string* & Marker_Inflow, unsigned short* & EngineID, su2double* & MassFlow) : size(nMarker_Inflow), marker(Marker_Inflow), engineid(EngineID), massflow(MassFlow) {
+    this->name = option_field_name;
+  }
+  
+  ~COptionInflow() {};
+  
+  string SetValue(vector<string> option_value) {
+    
+    unsigned short totalVals = option_value.size();
+    if ((totalVals == 1) && (option_value[0].compare("NONE") == 0)) {
+      this->size = 0;
+      this->marker = NULL;
+      this->engineid = NULL;
+      this->massflow = NULL;
+      return "";
+    }
+    
+    if (totalVals % 3 != 0) {
+      string newstring;
+      newstring.append(this->name);
+      newstring.append(": must have a number of entries divisible by 3");
+      this->size = 0;
+      this->marker = NULL;
+      this->engineid = NULL;
+      this->massflow = NULL;
+      return newstring;
+    }
+    
+    unsigned short nVals = totalVals / 3;
+    this->size = nVals;
+    this->marker = new string[nVals];
+    this->engineid = new unsigned short[nVals];
+    this->massflow = new su2double[nVals];
+    
+    for (unsigned long i = 0; i < nVals; i++) {
+      this->marker[i].assign(option_value[3*i]);
+      istringstream ss_1st(option_value[3*i + 1]);
+      if (!(ss_1st >> this->engineid[i]))
+        return badValue(option_value, "inflow fixed", this->name);
+      istringstream ss_2nd(option_value[3*i + 2]);
+      if (!(ss_2nd >> this->massflow[i]))
+        return badValue(option_value, "inflow fixed", this->name);
+    }
+    
+    return "";
+  }
+  
+  void SetDefault() {
+    this->marker = NULL;
+    this->engineid = NULL;
+    this->massflow = NULL;
     this->size = 0; // There is no default value for list
   }
   
