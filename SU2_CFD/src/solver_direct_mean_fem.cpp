@@ -208,12 +208,12 @@ CFEM_DG_EulerSolver::CFEM_DG_EulerSolver(CGeometry *geometry, CConfig *config, u
 
     /* Viscous simulation. */
     unsigned int sizeFluxes = nIntegrationMax*nDim;
-    sizeFluxes = nVar*max(sizeFluxes, (unsigned int) nDOFsMax);
+    sizeFluxes = 16*(sizeFluxes, (unsigned int) nDOFsMax);
 
-    const unsigned int sizeGradSolInt = nIntegrationMax*nDim*max(nVar,nDOFsMax);
+    const unsigned int sizeGradSolInt = nIntegrationMax*nDim*max(16, (int) nDOFsMax);
 
-    sizeVecTmp = nIntegrationMax*(4 + 3*nVar) + sizeFluxes + sizeGradSolInt
-               + max(nIntegrationMax,nDOFsMax)*nVar;
+    sizeVecTmp = nIntegrationMax*(4 + 3*16) + sizeFluxes + sizeGradSolInt
+               + (nIntegrationMax+nDOFsMax)*16;
   }
   else {
 
@@ -244,7 +244,9 @@ CFEM_DG_EulerSolver::CFEM_DG_EulerSolver(CGeometry *geometry, CConfig *config, u
     sizeVecTmp = max(sizeVecTmp, sizePredictorADER);
   }
 
-  VecTmpMemory.resize(sizeVecTmp);
+  /* Allocate the memory for VecTmpMemory. Initialize its values to 0.0 to
+     avoid uninitialized memory when padding. */
+  VecTmpMemory.assign(sizeVecTmp, 0.0);
 
   /*--- Perform the non-dimensionalization for the flow equations using the
         specified reference values. ---*/
@@ -6806,7 +6808,7 @@ void CFEM_DG_EulerSolver::BoundaryStates_Riemann(CConfig                  *confi
         const su2double vyL    = tmp*UL[2];
         const su2double alphaL = 0.5*(vxL*vxL + vyL*vyL);
         const su2double eL     = tmp*UL[3] - alphaL;
-        
+
         const su2double nx  = normals[0];
         const su2double ny  = normals[1];
         const su2double vnL = vxL*nx + vyL*ny;
@@ -10326,12 +10328,10 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
   const su2double factHeatFlux_Lam  = Gamma/Prandtl_Lam;
   const su2double factHeatFlux_Turb = Gamma/Prandtl_Turb;
 
-  /*--- Set the pointers for the local arrays. ---*/
+  /* Initialization for the timing routines and set the number of bytes
+     that must be copied in the memcpy calls. */
   double tick = 0.0;
-
-  su2double *sources       = VecTmpMemory.data();
-  su2double *solAndGradInt = sources       + nIntegrationMax*nVar;
-  su2double *fluxes        = solAndGradInt + nIntegrationMax*nVar*(nDim+1);
+  const unsigned long nBytes = nVar*sizeof(su2double);
 
   /* Store the number of metric points per integration point, which depends
      on the number of dimensions. */
@@ -10339,7 +10339,15 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
 
   /*--- Loop over the given element range to compute the contribution of the
         volume integral in the DG FEM formulation to the residual. ---*/
-  for(unsigned long l=elemBeg; l<elemEnd; ++l) {
+  for(unsigned long l=elemBeg; l<elemEnd; l+=3) {
+
+    /* Set lBeg and lEnd for this chunk of elements. */
+    const unsigned long lBeg   = l;
+    const unsigned long lEnd   = min(l+3, elemEnd);
+    const unsigned short llEnd = lEnd - lBeg;
+
+    /* Determine the padded N value of the gemm computation. */
+    const unsigned short NPad = (llEnd == 1) ? 8 : 16;
 
     /* Get the data from the corresponding standard element. */
     const unsigned short ind             = volElem[l].indStandardElement;
@@ -10353,8 +10361,11 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
     unsigned short nPoly = standardElementsSol[ind].GetNPoly();
     if(nPoly == 0) nPoly = 1;
 
-    /* Compute the length scale of the current element for the LES. */
-    const su2double lenScale = volElem[l].lenScale/nPoly;
+    /*--- Set the pointers for the local arrays. ---*/
+    su2double *solDOFs       = VecTmpMemory.data();
+    su2double *sources       = solDOFs       + nDOFs*NPad;
+    su2double *solAndGradInt = sources       + nInt *NPad;
+    su2double *fluxes        = solAndGradInt + nInt *NPad*(nDim+1);
 
     /*------------------------------------------------------------------------*/
     /*--- Step 1: Determine the solution variables and their gradients     ---*/
@@ -10362,14 +10373,25 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
     /*---         points of the element.                                   ---*/
     /*------------------------------------------------------------------------*/
 
-    /* Easier storage of the solution variables for this element. */
-    const unsigned short timeLevel = volElem[l].timeLevel;
-    const su2double *solDOFs = VecWorkSolDOFs[timeLevel].data()
-                             + nVar*volElem[l].offsetDOFsSolThisTimeLevel;
+    /* Copy the solution of the DOFs into solDOFs for the chunk of elements. */
+    for(unsigned short ll=0; ll<llEnd; ++ll) {
 
-    /* Call the general function to carry out the matrix product. */
+      /* Easier storage of the solution variables for this element. */
+      const unsigned long lInd = lBeg + ll;
+      const unsigned short timeLevel = volElem[lInd].timeLevel;
+      const su2double *solDOFsElem = VecWorkSolDOFs[timeLevel].data()
+                                   + nVar*volElem[lInd].offsetDOFsSolThisTimeLevel;
+
+      /* Loop over the DOFs and copy the data. */
+      for(unsigned short i=0; i<nDOFs; ++i)
+        memcpy(solDOFs+i*NPad+ll*nVar, solDOFsElem+i*nVar, nBytes);
+    }
+
+    /* Call the general function to carry out the matrix product to determine
+       the solution and gradients in the integration points of the chunk
+       of elements. */
     config->GEMM_Tick(&tick);
-    DenseMatrixProduct(nInt*(nDim+1), nVar, nDOFs, matBasisInt, solDOFs, solAndGradInt);
+    DenseMatrixProduct(nInt*(nDim+1), NPad, nDOFs, matBasisInt, solDOFs, solAndGradInt);
     config->GEMM_Tock(tick, "Volume_Residual1", nInt*(nDim+1), nVar, nDOFs);
 
     /*------------------------------------------------------------------------*/
@@ -10382,7 +10404,7 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
     /* Determine the offset between the solution variables and the r-derivatives,
        which is also the offset between the r- and s-derivatives and the offset
        between s- and t-derivatives. */
-    const unsigned short offDeriv = nVar*nInt;
+    const unsigned short offDeriv = NPad*nInt;
 
     /* Make a distinction between two and three space dimensions
         in order to have the most efficient code. */
@@ -10390,140 +10412,147 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
 
       case 2: {
 
-        /* 2D simulation. Loop over the integration points to compute
-           the fluxes. */
-        for(unsigned short i=0; i<nInt; ++i) {
+        /* 2D simulation. Loop over the chunk of elements. */
+        for(unsigned short ll=0; ll<llEnd; ++ll) {
+          const unsigned long lInd = lBeg + ll;
 
-          /* Easier storage of the metric terms in this integration point and
-             compute the inverse of the Jacobian. */
-          const su2double *metricTerms = volElem[l].metricTerms.data()
-                                       + i*nMetricPerPoint;
-          const su2double Jac          = metricTerms[0];
-          const su2double JacInv       = 1.0/Jac;
+          /* Loop over the integration points to compute the fluxes. */
+          for(unsigned short i=0; i<nInt; ++i) {
 
-          /* Compute the true metric terms in this integration point. */
-          const su2double drdx = JacInv*metricTerms[1];
-          const su2double drdy = JacInv*metricTerms[2];
+            /* Easier storage of the metric terms in this integration point and
+               compute the inverse of the Jacobian. */
+            const su2double *metricTerms = volElem[lInd].metricTerms.data()
+                                         + i*nMetricPerPoint;
+            const su2double Jac          = metricTerms[0];
+            const su2double JacInv       = 1.0/Jac;
 
-          const su2double dsdx = JacInv*metricTerms[3];
-          const su2double dsdy = JacInv*metricTerms[4];
+            /* Compute the true metric terms in this integration point. */
+            const su2double drdx = JacInv*metricTerms[1];
+            const su2double drdy = JacInv*metricTerms[2];
 
-          /* Compute the metric terms multiplied by minus the integration weight.
-             The minus sign comes from the integration by parts in the weak
-             formulation. */
-          const su2double wDrdx = -weights[i]*metricTerms[1];
-          const su2double wDrdy = -weights[i]*metricTerms[2];
+            const su2double dsdx = JacInv*metricTerms[3];
+            const su2double dsdy = JacInv*metricTerms[4];
 
-          const su2double wDsdx = -weights[i]*metricTerms[3];
-          const su2double wDsdy = -weights[i]*metricTerms[4];
+            /* Compute the metric terms multiplied by minus the integration weight.
+               The minus sign comes from the integration by parts in the weak
+               formulation. */
+            const su2double wDrdx = -weights[i]*metricTerms[1];
+            const su2double wDrdy = -weights[i]*metricTerms[2];
 
-          /* Easier storage of the location where the solution data of this
-             integration point starts. */
-          const su2double *sol    = solAndGradInt + nVar*i;
-          const su2double *dSolDr = sol    + offDeriv;
-          const su2double *dSolDs = dSolDr + offDeriv;
+            const su2double wDsdx = -weights[i]*metricTerms[3];
+            const su2double wDsdy = -weights[i]*metricTerms[4];
 
-          /*--- Compute the Cartesian gradients of the independent solution
-                variables from the gradients in parametric coordinates and the
-                metric terms in this integration point. ---*/
-          const su2double dRhoDx  = dSolDr[0]*drdx + dSolDs[0]*dsdx;
-          const su2double dRhoUDx = dSolDr[1]*drdx + dSolDs[1]*dsdx;
-          const su2double dRhoVDx = dSolDr[2]*drdx + dSolDs[2]*dsdx;
-          const su2double dRhoEDx = dSolDr[3]*drdx + dSolDs[3]*dsdx;
+            /* Easier storage of the location where the solution data of this
+               integration point starts. */
+            const su2double *sol    = solAndGradInt + NPad*i + nVar*ll;
+            const su2double *dSolDr = sol    + offDeriv;
+            const su2double *dSolDs = dSolDr + offDeriv;
 
-          const su2double dRhoDy  = dSolDr[0]*drdy + dSolDs[0]*dsdy;
-          const su2double dRhoUDy = dSolDr[1]*drdy + dSolDs[1]*dsdy;
-          const su2double dRhoVDy = dSolDr[2]*drdy + dSolDs[2]*dsdy;
-          const su2double dRhoEDy = dSolDr[3]*drdy + dSolDs[3]*dsdy;
+            /*--- Compute the Cartesian gradients of the independent solution
+                  variables from the gradients in parametric coordinates and the
+                  metric terms in this integration point. ---*/
+            const su2double dRhoDx  = dSolDr[0]*drdx + dSolDs[0]*dsdx;
+            const su2double dRhoUDx = dSolDr[1]*drdx + dSolDs[1]*dsdx;
+            const su2double dRhoVDx = dSolDr[2]*drdx + dSolDs[2]*dsdx;
+            const su2double dRhoEDx = dSolDr[3]*drdx + dSolDs[3]*dsdx;
 
-          /*--- Compute the velocities and static energy in this integration point. ---*/
-          const su2double rhoInv       = 1.0/sol[0];
-          const su2double u            = sol[1]*rhoInv;
-          const su2double v            = sol[2]*rhoInv;
-          const su2double TotalEnergy  = sol[3]*rhoInv;
-          const su2double StaticEnergy = TotalEnergy - 0.5*(u*u + v*v);
+            const su2double dRhoDy  = dSolDr[0]*drdy + dSolDs[0]*dsdy;
+            const su2double dRhoUDy = dSolDr[1]*drdy + dSolDs[1]*dsdy;
+            const su2double dRhoVDy = dSolDr[2]*drdy + dSolDs[2]*dsdy;
+            const su2double dRhoEDy = dSolDr[3]*drdy + dSolDs[3]*dsdy;
 
-          /*--- Compute the Cartesian gradients of the velocities and static energy
-                in this integration point and also the divergence of the velocity. ---*/
-          const su2double dudx = rhoInv*(dRhoUDx - u*dRhoDx);
-          const su2double dudy = rhoInv*(dRhoUDy - u*dRhoDy);
+            /*--- Compute the velocities and static energy in this integration point. ---*/
+            const su2double rhoInv       = 1.0/sol[0];
+            const su2double u            = sol[1]*rhoInv;
+            const su2double v            = sol[2]*rhoInv;
+            const su2double TotalEnergy  = sol[3]*rhoInv;
+            const su2double StaticEnergy = TotalEnergy - 0.5*(u*u + v*v);
 
-          const su2double dvdx = rhoInv*(dRhoVDx - v*dRhoDx);
-          const su2double dvdy = rhoInv*(dRhoVDy - v*dRhoDy);
+            /*--- Compute the Cartesian gradients of the velocities and static energy
+                  in this integration point and also the divergence of the velocity. ---*/
+            const su2double dudx = rhoInv*(dRhoUDx - u*dRhoDx);
+            const su2double dudy = rhoInv*(dRhoUDy - u*dRhoDy);
 
-          const su2double dStaticEnergyDx = rhoInv*(dRhoEDx - TotalEnergy*dRhoDx)
-                                          - u*dudx - v*dvdx;
-          const su2double dStaticEnergyDy = rhoInv*(dRhoEDy - TotalEnergy*dRhoDy)
-                                          - u*dudy - v*dvdy;
+            const su2double dvdx = rhoInv*(dRhoVDx - v*dRhoDx);
+            const su2double dvdy = rhoInv*(dRhoVDy - v*dRhoDy);
 
-          const su2double divVel = dudx + dvdy;
+            const su2double dStaticEnergyDx = rhoInv*(dRhoEDx - TotalEnergy*dRhoDx)
+                                            - u*dudx - v*dvdx;
+            const su2double dStaticEnergyDy = rhoInv*(dRhoEDy - TotalEnergy*dRhoDy)
+                                            - u*dudy - v*dvdy;
 
-          /*--- Compute the pressure and the laminar viscosity. ---*/
-          FluidModel->SetTDState_rhoe(sol[0], StaticEnergy);
-          const su2double Pressure     = FluidModel->GetPressure();
-          const su2double ViscosityLam = FluidModel->GetLaminarViscosity();
+            const su2double divVel = dudx + dvdy;
 
-          /*--- If an SGS model is used the eddy viscosity must be computed. ---*/
-          su2double ViscosityTurb = 0.0;
-          if( SGSModelUsed )
-            ViscosityTurb = SGSModel->ComputeEddyViscosity_2D(sol[0], dudx, dudy,
-                                                              dvdx, dvdy, lenScale,
-                                                              volElem[l].wallDistance[i]);
+            /*--- Compute the pressure and the laminar viscosity. ---*/
+            FluidModel->SetTDState_rhoe(sol[0], StaticEnergy);
+            const su2double Pressure     = FluidModel->GetPressure();
+            const su2double ViscosityLam = FluidModel->GetLaminarViscosity();
 
-          /* Compute the total viscosity and heat conductivity. Note that the heat
-             conductivity is divided by the Cv, because gradients of internal energy
-             are computed and not temperature. */
-          const su2double Viscosity = ViscosityLam + ViscosityTurb;
-          const su2double kOverCv = ViscosityLam *factHeatFlux_Lam
-                                  + ViscosityTurb*factHeatFlux_Turb;
+            /*--- If an SGS model is used the eddy viscosity must be computed. ---*/
+            su2double ViscosityTurb = 0.0;
+            if( SGSModelUsed ) {
+              const su2double lenScale = volElem[lInd].lenScale/nPoly;
+              ViscosityTurb = SGSModel->ComputeEddyViscosity_2D(sol[0], dudx, dudy,
+                                                                dvdx, dvdy, lenScale,
+                                                                volElem[l].wallDistance[i]);
+            }
 
-          /*--- Set the value of the second viscosity and compute the divergence
-                term in the viscous normal stresses. ---*/
-          const su2double lambda     = -TWO3*Viscosity;
-          const su2double lamDivTerm =  lambda*divVel;
+            /* Compute the total viscosity and heat conductivity. Note that the heat
+               conductivity is divided by the Cv, because gradients of internal energy
+               are computed and not temperature. */
+            const su2double Viscosity = ViscosityLam + ViscosityTurb;
+            const su2double kOverCv = ViscosityLam *factHeatFlux_Lam
+                                    + ViscosityTurb*factHeatFlux_Turb;
 
-          /*--- Compute the viscous stress tensor and minus the heatflux vector. ---*/
-          const su2double tauxx = 2.0*Viscosity*dudx + lamDivTerm;
-          const su2double tauyy = 2.0*Viscosity*dvdy + lamDivTerm;
-          const su2double tauxy = Viscosity*(dudy + dvdx);
+            /*--- Set the value of the second viscosity and compute the divergence
+                  term in the viscous normal stresses. ---*/
+            const su2double lambda     = -TWO3*Viscosity;
+            const su2double lamDivTerm =  lambda*divVel;
 
-          const su2double qx = kOverCv*dStaticEnergyDx;
-          const su2double qy = kOverCv*dStaticEnergyDy;
+            /*--- Compute the viscous stress tensor and minus the heatflux vector. ---*/
+            const su2double tauxx = 2.0*Viscosity*dudx + lamDivTerm;
+            const su2double tauyy = 2.0*Viscosity*dvdy + lamDivTerm;
+            const su2double tauxy = Viscosity*(dudy + dvdx);
 
-          /* Set the pointer for the fluxes in this integration point. */
-          su2double *flux = fluxes + i*nDim*nVar;
+            const su2double qx = kOverCv*dStaticEnergyDx;
+            const su2double qy = kOverCv*dStaticEnergyDy;
 
-          /*--- Fluxes in r-direction. */
-          const su2double H     = TotalEnergy + rhoInv*Pressure;
-          const su2double rhoUr = sol[1]*wDrdx + sol[2]*wDrdy;
+            /* Set the pointer for the fluxes in this integration point. */
+            su2double *flux = fluxes + i*nDim*NPad + ll*nVar;
 
-          flux[0] = rhoUr;
-          flux[1] = rhoUr*u + (Pressure - tauxx)*wDrdx - tauxy*wDrdy;
-          flux[2] = rhoUr*v - tauxy*wDrdx + (Pressure - tauyy)*wDrdy;
-          flux[3] = rhoUr*H - (u*tauxx + v*tauxy + qx)*wDrdx
-                            - (u*tauxy + v*tauyy + qy)*wDrdy;
+            /*--- Fluxes in r-direction. */
+            const su2double H     = TotalEnergy + rhoInv*Pressure;
+            const su2double rhoUr = sol[1]*wDrdx + sol[2]*wDrdy;
 
-          /*--- Fluxes in s-direction. */
-          const su2double rhoUs = sol[1]*wDsdx + sol[2]*wDsdy;
+            flux[0] = rhoUr;
+            flux[1] = rhoUr*u + (Pressure - tauxx)*wDrdx - tauxy*wDrdy;
+            flux[2] = rhoUr*v - tauxy*wDrdx + (Pressure - tauyy)*wDrdy;
+            flux[3] = rhoUr*H - (u*tauxx + v*tauxy + qx)*wDrdx
+                              - (u*tauxy + v*tauyy + qy)*wDrdy;
 
-          flux[4] = rhoUs;
-          flux[5] = rhoUs*u + (Pressure - tauxx)*wDsdx - tauxy*wDsdy;
-          flux[6] = rhoUs*v - tauxy*wDsdx + (Pressure - tauyy)*wDsdy;
-          flux[7] = rhoUs*H - (u*tauxx + v*tauxy + qx)*wDsdx
-                            - (u*tauxy + v*tauyy + qy)*wDsdy;
+            /*--- Fluxes in s-direction. */
+            flux = flux + NPad;
+            const su2double rhoUs = sol[1]*wDsdx + sol[2]*wDsdy;
 
-          /*--- If needed, compute the body forces in this integration point.
-                Note that the source terms are multiplied with minus the
-                integration weight in order to be consistent with the
-                formulation of the residual. ---*/
-          if( body_force ) {
-            su2double *source         = sources + i*nVar;
-            const su2double weightJac = weights[i]*Jac;
+            flux[0] = rhoUs;
+            flux[1] = rhoUs*u + (Pressure - tauxx)*wDsdx - tauxy*wDsdy;
+            flux[2] = rhoUs*v - tauxy*wDsdx + (Pressure - tauyy)*wDsdy;
+            flux[3] = rhoUs*H - (u*tauxx + v*tauxy + qx)*wDsdx
+                              - (u*tauxy + v*tauyy + qy)*wDsdy;
 
-            source[0] =  0.0;
-            source[1] = -weightJac*body_force_vector[0];
-            source[2] = -weightJac*body_force_vector[1];
-            source[3] = -weightJac*(u*body_force_vector[0] + v*body_force_vector[1]);
+            /*--- If needed, compute the body forces in this integration point.
+                  Note that the source terms are multiplied with minus the
+                  integration weight in order to be consistent with the
+                  formulation of the residual. ---*/
+            if( body_force ) {
+              su2double *source         = sources + i*NPad + ll*nVar;
+              const su2double weightJac = weights[i]*Jac;
+
+              source[0] =  0.0;
+              source[1] = -weightJac*body_force_vector[0];
+              source[2] = -weightJac*body_force_vector[1];
+              source[3] = -weightJac*(u*body_force_vector[0] + v*body_force_vector[1]);
+            }
           }
         }
 
@@ -10534,197 +10563,206 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
 
       case 3: {
 
-        /* 3D simulation. Loop over the integration points to compute
-           the fluxes. */
-        for(unsigned short i=0; i<nInt; ++i) {
+        /* 3D simulation. Loop over the chunk of elements. */
+        for(unsigned short ll=0; ll<llEnd; ++ll) {
 
-          /* Easier storage of the metric terms in this integration point and
-             compute the inverse of the Jacobian. */
-          const su2double *metricTerms = volElem[l].metricTerms.data()
-                                       + i*nMetricPerPoint;
-          const su2double Jac          = metricTerms[0];
-          const su2double JacInv       = 1.0/Jac;
+          const unsigned long lInd = lBeg + ll;
 
-          /* Compute the true metric terms in this integration point. */
-          const su2double drdx = JacInv*metricTerms[1];
-          const su2double drdy = JacInv*metricTerms[2];
-          const su2double drdz = JacInv*metricTerms[3];
+        /* Loop over the integration points to compute the fluxes. */
+          for(unsigned short i=0; i<nInt; ++i) {
 
-          const su2double dsdx = JacInv*metricTerms[4];
-          const su2double dsdy = JacInv*metricTerms[5];
-          const su2double dsdz = JacInv*metricTerms[6];
+            /* Easier storage of the metric terms in this integration point and
+               compute the inverse of the Jacobian. */
+            const su2double *metricTerms = volElem[lInd].metricTerms.data()
+                                         + i*nMetricPerPoint;
+            const su2double Jac          = metricTerms[0];
+            const su2double JacInv       = 1.0/Jac;
 
-          const su2double dtdx = JacInv*metricTerms[7];
-          const su2double dtdy = JacInv*metricTerms[8];
-          const su2double dtdz = JacInv*metricTerms[9];
+            /* Compute the true metric terms in this integration point. */
+            const su2double drdx = JacInv*metricTerms[1];
+            const su2double drdy = JacInv*metricTerms[2];
+            const su2double drdz = JacInv*metricTerms[3];
 
-          /* Compute the metric terms multiplied by minus the integration weight.
-             The minus sign comes from the integration by parts in the weak
-             formulation. */
-          const su2double wDrdx = -weights[i]*metricTerms[1];
-          const su2double wDrdy = -weights[i]*metricTerms[2];
-          const su2double wDrdz = -weights[i]*metricTerms[3];
+            const su2double dsdx = JacInv*metricTerms[4];
+            const su2double dsdy = JacInv*metricTerms[5];
+            const su2double dsdz = JacInv*metricTerms[6];
 
-          const su2double wDsdx = -weights[i]*metricTerms[4];
-          const su2double wDsdy = -weights[i]*metricTerms[5];
-          const su2double wDsdz = -weights[i]*metricTerms[6];
+            const su2double dtdx = JacInv*metricTerms[7];
+            const su2double dtdy = JacInv*metricTerms[8];
+            const su2double dtdz = JacInv*metricTerms[9];
 
-          const su2double wDtdx = -weights[i]*metricTerms[7];
-          const su2double wDtdy = -weights[i]*metricTerms[8];
-          const su2double wDtdz = -weights[i]*metricTerms[9];
+            /* Compute the metric terms multiplied by minus the integration weight.
+               The minus sign comes from the integration by parts in the weak
+               formulation. */
+            const su2double wDrdx = -weights[i]*metricTerms[1];
+            const su2double wDrdy = -weights[i]*metricTerms[2];
+            const su2double wDrdz = -weights[i]*metricTerms[3];
 
-          /* Easier storage of the location where the solution data of this
-             integration point starts. */
-          const su2double *sol    = solAndGradInt + nVar*i;
-          const su2double *dSolDr = sol    + offDeriv;
-          const su2double *dSolDs = dSolDr + offDeriv;
-          const su2double *dSolDt = dSolDs + offDeriv;
+            const su2double wDsdx = -weights[i]*metricTerms[4];
+            const su2double wDsdy = -weights[i]*metricTerms[5];
+            const su2double wDsdz = -weights[i]*metricTerms[6];
 
-          /*--- Compute the Cartesian gradients of the independent solution
-                variables from the gradients in parametric coordinates and the
-                metric terms in this integration point. ---*/
-          const su2double dRhoDx  = dSolDr[0]*drdx + dSolDs[0]*dsdx + dSolDt[0]*dtdx;
-          const su2double dRhoUDx = dSolDr[1]*drdx + dSolDs[1]*dsdx + dSolDt[1]*dtdx;
-          const su2double dRhoVDx = dSolDr[2]*drdx + dSolDs[2]*dsdx + dSolDt[2]*dtdx;
-          const su2double dRhoWDx = dSolDr[3]*drdx + dSolDs[3]*dsdx + dSolDt[3]*dtdx;
-          const su2double dRhoEDx = dSolDr[4]*drdx + dSolDs[4]*dsdx + dSolDt[4]*dtdx;
+            const su2double wDtdx = -weights[i]*metricTerms[7];
+            const su2double wDtdy = -weights[i]*metricTerms[8];
+            const su2double wDtdz = -weights[i]*metricTerms[9];
 
-          const su2double dRhoDy  = dSolDr[0]*drdy + dSolDs[0]*dsdy + dSolDt[0]*dtdy;
-          const su2double dRhoUDy = dSolDr[1]*drdy + dSolDs[1]*dsdy + dSolDt[1]*dtdy;
-          const su2double dRhoVDy = dSolDr[2]*drdy + dSolDs[2]*dsdy + dSolDt[2]*dtdy;
-          const su2double dRhoWDy = dSolDr[3]*drdy + dSolDs[3]*dsdy + dSolDt[3]*dtdy;
-          const su2double dRhoEDy = dSolDr[4]*drdy + dSolDs[4]*dsdy + dSolDt[4]*dtdy;
+            /* Easier storage of the location where the solution data of this
+               integration point starts. */
+            const su2double *sol    = solAndGradInt + NPad*i + nVar*ll;
+            const su2double *dSolDr = sol    + offDeriv;
+            const su2double *dSolDs = dSolDr + offDeriv;
+            const su2double *dSolDt = dSolDs + offDeriv;
 
-          const su2double dRhoDz  = dSolDr[0]*drdz + dSolDs[0]*dsdz + dSolDt[0]*dtdz;
-          const su2double dRhoUDz = dSolDr[1]*drdz + dSolDs[1]*dsdz + dSolDt[1]*dtdz;
-          const su2double dRhoVDz = dSolDr[2]*drdz + dSolDs[2]*dsdz + dSolDt[2]*dtdz;
-          const su2double dRhoWDz = dSolDr[3]*drdz + dSolDs[3]*dsdz + dSolDt[3]*dtdz;
-          const su2double dRhoEDz = dSolDr[4]*drdz + dSolDs[4]*dsdz + dSolDt[4]*dtdz;
+            /*--- Compute the Cartesian gradients of the independent solution
+                  variables from the gradients in parametric coordinates and the
+                  metric terms in this integration point. ---*/
+            const su2double dRhoDx  = dSolDr[0]*drdx + dSolDs[0]*dsdx + dSolDt[0]*dtdx;
+            const su2double dRhoUDx = dSolDr[1]*drdx + dSolDs[1]*dsdx + dSolDt[1]*dtdx;
+            const su2double dRhoVDx = dSolDr[2]*drdx + dSolDs[2]*dsdx + dSolDt[2]*dtdx;
+            const su2double dRhoWDx = dSolDr[3]*drdx + dSolDs[3]*dsdx + dSolDt[3]*dtdx;
+            const su2double dRhoEDx = dSolDr[4]*drdx + dSolDs[4]*dsdx + dSolDt[4]*dtdx;
 
-          /*--- Compute the velocities and static energy in this integration point. ---*/
-          const su2double rhoInv       = 1.0/sol[0];
-          const su2double u            = sol[1]*rhoInv;
-          const su2double v            = sol[2]*rhoInv;
-          const su2double w            = sol[3]*rhoInv;
-          const su2double TotalEnergy  = sol[4]*rhoInv;
-          const su2double StaticEnergy = TotalEnergy - 0.5*(u*u + v*v + w*w);
+            const su2double dRhoDy  = dSolDr[0]*drdy + dSolDs[0]*dsdy + dSolDt[0]*dtdy;
+            const su2double dRhoUDy = dSolDr[1]*drdy + dSolDs[1]*dsdy + dSolDt[1]*dtdy;
+            const su2double dRhoVDy = dSolDr[2]*drdy + dSolDs[2]*dsdy + dSolDt[2]*dtdy;
+            const su2double dRhoWDy = dSolDr[3]*drdy + dSolDs[3]*dsdy + dSolDt[3]*dtdy;
+            const su2double dRhoEDy = dSolDr[4]*drdy + dSolDs[4]*dsdy + dSolDt[4]*dtdy;
 
-          /*--- Compute the Cartesian gradients of the velocities and static energy
-                in this integration point and also the divergence of the velocity. ---*/
-          const su2double dudx = rhoInv*(dRhoUDx - u*dRhoDx);
-          const su2double dudy = rhoInv*(dRhoUDy - u*dRhoDy);
-          const su2double dudz = rhoInv*(dRhoUDz - u*dRhoDz);
+            const su2double dRhoDz  = dSolDr[0]*drdz + dSolDs[0]*dsdz + dSolDt[0]*dtdz;
+            const su2double dRhoUDz = dSolDr[1]*drdz + dSolDs[1]*dsdz + dSolDt[1]*dtdz;
+            const su2double dRhoVDz = dSolDr[2]*drdz + dSolDs[2]*dsdz + dSolDt[2]*dtdz;
+            const su2double dRhoWDz = dSolDr[3]*drdz + dSolDs[3]*dsdz + dSolDt[3]*dtdz;
+            const su2double dRhoEDz = dSolDr[4]*drdz + dSolDs[4]*dsdz + dSolDt[4]*dtdz;
 
-          const su2double dvdx = rhoInv*(dRhoVDx - v*dRhoDx);
-          const su2double dvdy = rhoInv*(dRhoVDy - v*dRhoDy);
-          const su2double dvdz = rhoInv*(dRhoVDz - v*dRhoDz);
+            /*--- Compute the velocities and static energy in this integration point. ---*/
+            const su2double rhoInv       = 1.0/sol[0];
+            const su2double u            = sol[1]*rhoInv;
+            const su2double v            = sol[2]*rhoInv;
+            const su2double w            = sol[3]*rhoInv;
+            const su2double TotalEnergy  = sol[4]*rhoInv;
+            const su2double StaticEnergy = TotalEnergy - 0.5*(u*u + v*v + w*w);
 
-          const su2double dwdx = rhoInv*(dRhoWDx - w*dRhoDx);
-          const su2double dwdy = rhoInv*(dRhoWDy - w*dRhoDy);
-          const su2double dwdz = rhoInv*(dRhoWDz - w*dRhoDz);
+            /*--- Compute the Cartesian gradients of the velocities and static energy
+                  in this integration point and also the divergence of the velocity. ---*/
+            const su2double dudx = rhoInv*(dRhoUDx - u*dRhoDx);
+            const su2double dudy = rhoInv*(dRhoUDy - u*dRhoDy);
+            const su2double dudz = rhoInv*(dRhoUDz - u*dRhoDz);
 
-          const su2double dStaticEnergyDx = rhoInv*(dRhoEDx - TotalEnergy*dRhoDx)
-                                          - u*dudx - v*dvdx - w*dwdx;
-          const su2double dStaticEnergyDy = rhoInv*(dRhoEDy - TotalEnergy*dRhoDy)
-                                          - u*dudy - v*dvdy - w*dwdy;
-          const su2double dStaticEnergyDz = rhoInv*(dRhoEDz - TotalEnergy*dRhoDz)
-                                          - u*dudz - v*dvdz - w*dwdz;
+            const su2double dvdx = rhoInv*(dRhoVDx - v*dRhoDx);
+            const su2double dvdy = rhoInv*(dRhoVDy - v*dRhoDy);
+            const su2double dvdz = rhoInv*(dRhoVDz - v*dRhoDz);
 
-          const su2double divVel = dudx + dvdy + dwdz;
+            const su2double dwdx = rhoInv*(dRhoWDx - w*dRhoDx);
+            const su2double dwdy = rhoInv*(dRhoWDy - w*dRhoDy);
+            const su2double dwdz = rhoInv*(dRhoWDz - w*dRhoDz);
 
-          /*--- Compute the pressure and the laminar viscosity. ---*/
-          FluidModel->SetTDState_rhoe(sol[0], StaticEnergy);
-          const su2double Pressure     = FluidModel->GetPressure();
-          const su2double ViscosityLam = FluidModel->GetLaminarViscosity();
+            const su2double dStaticEnergyDx = rhoInv*(dRhoEDx - TotalEnergy*dRhoDx)
+                                            - u*dudx - v*dvdx - w*dwdx;
+            const su2double dStaticEnergyDy = rhoInv*(dRhoEDy - TotalEnergy*dRhoDy)
+                                            - u*dudy - v*dvdy - w*dwdy;
+            const su2double dStaticEnergyDz = rhoInv*(dRhoEDz - TotalEnergy*dRhoDz)
+                                            - u*dudz - v*dvdz - w*dwdz;
 
-          /*--- If an SGS model is used the eddy viscosity must be computed. ---*/
-          su2double ViscosityTurb = 0.0;
-          if( SGSModelUsed )
-            ViscosityTurb = SGSModel->ComputeEddyViscosity_3D(sol[0], dudx, dudy, dudz,
-                                                              dvdx, dvdy, dvdz, dwdx,
-                                                              dwdy, dwdz, lenScale,
-                                                              volElem[l].wallDistance[i]);
+            const su2double divVel = dudx + dvdy + dwdz;
 
-          /* Compute the total viscosity and heat conductivity. Note that the heat
-             conductivity is divided by the Cv, because gradients of internal energy
-             are computed and not temperature. */
-          const su2double Viscosity = ViscosityLam + ViscosityTurb;
-          const su2double kOverCv = ViscosityLam *factHeatFlux_Lam
-                                  + ViscosityTurb*factHeatFlux_Turb;
+            /*--- Compute the pressure and the laminar viscosity. ---*/
+            FluidModel->SetTDState_rhoe(sol[0], StaticEnergy);
+            const su2double Pressure     = FluidModel->GetPressure();
+            const su2double ViscosityLam = FluidModel->GetLaminarViscosity();
 
-          /*--- Set the value of the second viscosity and compute the divergence
-                term in the viscous normal stresses. ---*/
-          const su2double lambda     = -TWO3*Viscosity;
-          const su2double lamDivTerm =  lambda*divVel;
+            /*--- If an SGS model is used the eddy viscosity must be computed. ---*/
+            su2double ViscosityTurb = 0.0;
+            if( SGSModelUsed ) {
+              const su2double lenScale = volElem[lInd].lenScale/nPoly;
+              ViscosityTurb = SGSModel->ComputeEddyViscosity_3D(sol[0], dudx, dudy, dudz,
+                                                                dvdx, dvdy, dvdz, dwdx,
+                                                                dwdy, dwdz, lenScale,
+                                                                volElem[l].wallDistance[i]);
+            }
 
-          /*--- Compute the viscous stress tensor and minus the heatflux vector. ---*/
-          const su2double tauxx = 2.0*Viscosity*dudx + lamDivTerm;
-          const su2double tauyy = 2.0*Viscosity*dvdy + lamDivTerm;
-          const su2double tauzz = 2.0*Viscosity*dwdz + lamDivTerm;
+            /* Compute the total viscosity and heat conductivity. Note that the heat
+               conductivity is divided by the Cv, because gradients of internal energy
+               are computed and not temperature. */
+            const su2double Viscosity = ViscosityLam + ViscosityTurb;
+            const su2double kOverCv = ViscosityLam *factHeatFlux_Lam
+                                    + ViscosityTurb*factHeatFlux_Turb;
 
-          const su2double tauxy = Viscosity*(dudy + dvdx);
-          const su2double tauxz = Viscosity*(dudz + dwdx);
-          const su2double tauyz = Viscosity*(dvdz + dwdy);
+            /*--- Set the value of the second viscosity and compute the divergence
+                  term in the viscous normal stresses. ---*/
+            const su2double lambda     = -TWO3*Viscosity;
+            const su2double lamDivTerm =  lambda*divVel;
 
-          const su2double qx = kOverCv*dStaticEnergyDx;
-          const su2double qy = kOverCv*dStaticEnergyDy;
-          const su2double qz = kOverCv*dStaticEnergyDz;
+            /*--- Compute the viscous stress tensor and minus the heatflux vector. ---*/
+            const su2double tauxx = 2.0*Viscosity*dudx + lamDivTerm;
+            const su2double tauyy = 2.0*Viscosity*dvdy + lamDivTerm;
+            const su2double tauzz = 2.0*Viscosity*dwdz + lamDivTerm;
 
-          /* Set the pointer for the fluxes in this integration point. */
-          su2double *flux = fluxes + i*nDim*nVar;
+            const su2double tauxy = Viscosity*(dudy + dvdx);
+            const su2double tauxz = Viscosity*(dudz + dwdx);
+            const su2double tauyz = Viscosity*(dvdz + dwdy);
 
-          /*--- Fluxes in r-direction. */
-          const su2double H     = TotalEnergy + rhoInv*Pressure;
-          const su2double rhoUr = sol[1]*wDrdx + sol[2]*wDrdy + sol[3]*wDrdz;
+            const su2double qx = kOverCv*dStaticEnergyDx;
+            const su2double qy = kOverCv*dStaticEnergyDy;
+            const su2double qz = kOverCv*dStaticEnergyDz;
 
-          flux[0] = rhoUr;
-          flux[1] = rhoUr*u + (Pressure - tauxx)*wDrdx - tauxy*wDrdy - tauxz*wDrdz;
-          flux[2] = rhoUr*v - tauxy*wDrdx + (Pressure - tauyy)*wDrdy - tauyz*wDrdz;
-          flux[3] = rhoUr*w - tauxz*wDrdx - tauyz*wDrdy + (Pressure - tauzz)*wDrdz;
-          flux[4] = rhoUr*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDrdx
-                            - (u*tauxy + v*tauyy + w*tauyz + qy)*wDrdy
-                            - (u*tauxz + v*tauyz + w*tauzz + qz)*wDrdz;
+            /* Set the pointer for the fluxes in this integration point. */
+            su2double *flux = fluxes + i*nDim*NPad + ll*nVar;
 
-          /*--- Fluxes in s-direction. */
-          const su2double rhoUs = sol[1]*wDsdx + sol[2]*wDsdy + sol[3]*wDsdz;
+            /*--- Fluxes in r-direction. */
+            const su2double H     = TotalEnergy + rhoInv*Pressure;
+            const su2double rhoUr = sol[1]*wDrdx + sol[2]*wDrdy + sol[3]*wDrdz;
 
-          flux[5] = rhoUs;
-          flux[6] = rhoUs*u + (Pressure - tauxx)*wDsdx - tauxy*wDsdy - tauxz*wDsdz;
-          flux[7] = rhoUs*v - tauxy*wDsdx + (Pressure - tauyy)*wDsdy - tauyz*wDsdz;
-          flux[8] = rhoUs*w - tauxz*wDsdx - tauyz*wDsdy + (Pressure - tauzz)*wDsdz;
-          flux[9] = rhoUs*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDsdx
-                            - (u*tauxy + v*tauyy + w*tauyz + qy)*wDsdy
-                            - (u*tauxz + v*tauyz + w*tauzz + qz)*wDsdz;
+            flux[0] = rhoUr;
+            flux[1] = rhoUr*u + (Pressure - tauxx)*wDrdx - tauxy*wDrdy - tauxz*wDrdz;
+            flux[2] = rhoUr*v - tauxy*wDrdx + (Pressure - tauyy)*wDrdy - tauyz*wDrdz;
+            flux[3] = rhoUr*w - tauxz*wDrdx - tauyz*wDrdy + (Pressure - tauzz)*wDrdz;
+            flux[4] = rhoUr*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDrdx
+                              - (u*tauxy + v*tauyy + w*tauyz + qy)*wDrdy
+                              - (u*tauxz + v*tauyz + w*tauzz + qz)*wDrdz;
 
-          /*--- Fluxes in t-direction. */
-          const su2double rhoUt = sol[1]*wDtdx + sol[2]*wDtdy + sol[3]*wDtdz;
+            /*--- Fluxes in s-direction. */
+            flux = flux + NPad;
+            const su2double rhoUs = sol[1]*wDsdx + sol[2]*wDsdy + sol[3]*wDsdz;
 
-          flux[10] = rhoUt;
-          flux[11] = rhoUt*u + (Pressure - tauxx)*wDtdx - tauxy*wDtdy - tauxz*wDtdz;
-          flux[12] = rhoUt*v - tauxy*wDtdx + (Pressure - tauyy)*wDtdy - tauyz*wDtdz;
-          flux[13] = rhoUt*w - tauxz*wDtdx - tauyz*wDtdy + (Pressure - tauzz)*wDtdz;
-          flux[14] = rhoUt*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDtdx
-                             - (u*tauxy + v*tauyy + w*tauyz + qy)*wDtdy
-                             - (u*tauxz + v*tauyz + w*tauzz + qz)*wDtdz;
+            flux[0] = rhoUs;
+            flux[1] = rhoUs*u + (Pressure - tauxx)*wDsdx - tauxy*wDsdy - tauxz*wDsdz;
+            flux[2] = rhoUs*v - tauxy*wDsdx + (Pressure - tauyy)*wDsdy - tauyz*wDsdz;
+            flux[3] = rhoUs*w - tauxz*wDsdx - tauyz*wDsdy + (Pressure - tauzz)*wDsdz;
+            flux[4] = rhoUs*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDsdx
+                              - (u*tauxy + v*tauyy + w*tauyz + qy)*wDsdy
+                              - (u*tauxz + v*tauyz + w*tauzz + qz)*wDsdz;
 
-          /*--- If needed, compute the body forces in this integration point.
-                Note that the source terms are multiplied with minus the
-                integration weight in order to be consistent with the
-                formulation of the residual. ---*/
-          if( body_force ) {
-            su2double *source         = sources + i*nVar;
-            const su2double weightJac = weights[i]*Jac;
+            /*--- Fluxes in t-direction. */
+            flux = flux + NPad;
+            const su2double rhoUt = sol[1]*wDtdx + sol[2]*wDtdy + sol[3]*wDtdz;
 
-            source[0] =  0.0;
-            source[1] = -weightJac*body_force_vector[0];
-            source[2] = -weightJac*body_force_vector[1];
-            source[3] = -weightJac*body_force_vector[2];
-            source[4] = -weightJac*(u*body_force_vector[0] + v*body_force_vector[1]
-                      +             w*body_force_vector[2]);
+            flux[0] = rhoUt;
+            flux[1] = rhoUt*u + (Pressure - tauxx)*wDtdx - tauxy*wDtdy - tauxz*wDtdz;
+            flux[2] = rhoUt*v - tauxy*wDtdx + (Pressure - tauyy)*wDtdy - tauyz*wDtdz;
+            flux[3] = rhoUt*w - tauxz*wDtdx - tauyz*wDtdy + (Pressure - tauzz)*wDtdz;
+            flux[4] = rhoUt*H - (u*tauxx + v*tauxy + w*tauxz + qx)*wDtdx
+                              - (u*tauxy + v*tauyy + w*tauyz + qy)*wDtdy
+                              - (u*tauxz + v*tauyz + w*tauzz + qz)*wDtdz;
+
+            /*--- If needed, compute the body forces in this integration point.
+                  Note that the source terms are multiplied with minus the
+                  integration weight in order to be consistent with the
+                  formulation of the residual. ---*/
+            if( body_force ) {
+              su2double *source         = sources + i*NPad + ll*nVar;
+              const su2double weightJac = weights[i]*Jac;
+
+              source[0] =  0.0;
+              source[1] = -weightJac*body_force_vector[0];
+              source[2] = -weightJac*body_force_vector[1];
+              source[3] = -weightJac*body_force_vector[2];
+              source[4] = -weightJac*(u*body_force_vector[0] + v*body_force_vector[1]
+                        +             w*body_force_vector[2]);
+            }
           }
-        }
 
-        break;
+          break;
+        }
       }
     }
 
@@ -10735,12 +10773,10 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
     /*---         integration over the volume element.                     ---*/
     /*------------------------------------------------------------------------*/
 
-    /* Easier storage of the residuals for this volume element. */
-    su2double *res = VecResDOFs.data() + nVar*volElem[l].offsetDOFsSolLocal;
-
-    /* Call the general function to carry out the matrix product. */
+    /* Call the general function to carry out the matrix product.
+       Use solDOFs as a temporary storage for the matrix product. */
     config->GEMM_Tick(&tick);
-    DenseMatrixProduct(nDOFs, nVar, nInt*nDim, matDerBasisIntTrans, fluxes, res);
+    DenseMatrixProduct(nDOFs, NPad, nInt*nDim, matDerBasisIntTrans, fluxes, solDOFs);
     config->GEMM_Tock(tick, "Volume_Residual2", nDOFs, nVar, nInt*nDim);
 
     /* Add the contribution from the source terms, if needed. Use solAndGradInt
@@ -10749,12 +10785,25 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
 
       /* Call the general function to carry out the matrix product. */
       config->GEMM_Tick(&tick);
-      DenseMatrixProduct(nDOFs, nVar, nInt, matBasisIntTrans, sources, solAndGradInt);
+      DenseMatrixProduct(nDOFs, NPad, nInt, matBasisIntTrans, sources, solAndGradInt);
       config->GEMM_Tock(tick, "Volume_Residual3", nDOFs, nVar, nInt);
 
       /* Add the residuals due to source terms to the volume residuals */
-      for(unsigned short i=0; i<(nDOFs*nVar); ++i)
-        res[i] += solAndGradInt[i];
+      for(unsigned short i=0; i<(nDOFs*NPad); ++i)
+        solDOFs[i] += solAndGradInt[i];
+    }
+
+    /* Loop over the elements in this chunk to store the residuals
+       in the appropriate locations. */
+    for(unsigned short ll=0; ll<llEnd; ++ll) {
+      const unsigned long lInd = lBeg + ll;
+
+      /* Easier storage of the residuals for this volume element. */
+      su2double *res = VecResDOFs.data() + nVar*volElem[lInd].offsetDOFsSolLocal;
+
+      /* Loop over the DOFs and copy the data. */
+      for(unsigned short i=0; i<nDOFs; ++i)
+        memcpy(res+i*nVar, solDOFs+i*NPad+ll*nVar, nBytes);
     }
   }
 }
