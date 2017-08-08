@@ -208,7 +208,7 @@ CFEM_DG_EulerSolver::CFEM_DG_EulerSolver(CGeometry *geometry, CConfig *config, u
 
     /* Viscous simulation. */
     unsigned int sizeFluxes = nIntegrationMax*nDim;
-    sizeFluxes = 16*(sizeFluxes, (unsigned int) nDOFsMax);
+    sizeFluxes = 16*max(sizeFluxes, (unsigned int) nDOFsMax);
 
     const unsigned int sizeGradSolInt = nIntegrationMax*nDim*max(16, (int) nDOFsMax);
 
@@ -10568,7 +10568,7 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
 
           const unsigned long lInd = lBeg + ll;
 
-        /* Loop over the integration points to compute the fluxes. */
+          /* Loop over the integration points to compute the fluxes. */
           for(unsigned short i=0; i<nInt; ++i) {
 
             /* Easier storage of the metric terms in this integration point and
@@ -10760,9 +10760,9 @@ void CFEM_DG_NSSolver::Volume_Residual(CConfig             *config,
                         +             w*body_force_vector[2]);
             }
           }
-
-          break;
         }
+
+        break;
       }
     }
 
