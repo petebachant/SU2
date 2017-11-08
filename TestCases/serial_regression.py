@@ -35,6 +35,19 @@ from __future__ import print_function, division, absolute_import
 import sys
 from TestCase import TestCase
 
+
+def test_channel():
+    channel = TestCase('channel')
+    channel.cfg_dir = "euler/channel"
+    channel.cfg_file = "inv_channel_RK.cfg"
+    channel.test_iter = 100
+    channel.test_vals = [-3.110240, 2.263506, 0.008686, 0.029098] #last 4 columns
+    channel.su2_exec = "SU2_CFD"
+    channel.timeout = 1600
+    channel.tol = 0.00001
+    assert channel.run_test()
+
+
 def main():
     '''This program runs SU2 and ensures that the output matches specified values. 
        This will be used to do checks when code is pushed to github 
